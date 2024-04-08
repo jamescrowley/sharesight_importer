@@ -68,6 +68,11 @@ class SharesightApiClient:
             f"{self.API_V2_BASE_URL}portfolios/{portfolio_id}/cash_accounts.json", 
             json={'cash_account': data}
         ).json()
+    
+    def get_cash_accounts(self, portfolio_id):
+        return self._make_request('get', 
+            f"{self.API_V2_BASE_URL}portfolios/{portfolio_id}/cash_accounts.json"
+        ).json()
 
     def resync_cash_account(self, cash_account_id):
         # note - undocumented API
@@ -84,7 +89,23 @@ class SharesightApiClient:
         return self._make_request('get', 
             f"{self.API_V2_BASE_URL}portfolios/{portfolio_id}/payouts.json?start_date={date}&end_date={date}"
         ).json()
+    
+    def try_create_custom_investment(self, instrument_data):
+        return self._make_request_without_status_check('post', 
+            f'{self.API_V3_BASE_URL}custom_investments', 
+            json=instrument_data
+        )
 
+    def try_delete_custom_instruments(self, suffix):
+        custom_investments = self._make_request('get', 
+            f'{self.API_V3_BASE_URL}custom_investments')
+        for custom_investment in custom_investments.json().get('custom_investments', []):
+            # if name ends with suffix then delete
+            if custom_investment['name'].endswith(suffix):
+                self._make_request('delete', 
+                    f"{self.API_V3_BASE_URL}custom_investments/{custom_investment['id']}"
+                )
+    
     def try_create_trade(self, trade_data):
         return self._make_request_without_status_check('post', 
             f'{self.API_V2_BASE_URL}trades.json', 

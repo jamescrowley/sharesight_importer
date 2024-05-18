@@ -95,6 +95,12 @@ class SharesightApiClient:
             f'{self.API_V3_BASE_URL}custom_investments', 
             json=instrument_data
         )
+    
+    def try_create_holding_merge(self, portfolio_id, merge_data):
+        return self._make_request_without_status_check('post', 
+            f'{self.API_V2_BASE_URL}portfolios/{portfolio_id}/holding_merges.json', 
+            json=merge_data
+        )
 
     def try_delete_custom_instruments(self, suffix):
         custom_investments = self._make_request('get', 

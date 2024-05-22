@@ -1,4 +1,5 @@
 import csv
+import datetime
 import json
 from typing import TextIO
 from sharesight_api_client import SharesightApiClient
@@ -48,7 +49,7 @@ class SharesightCsvImporter:
     def get_portfolio_holdings_lookup_key(self, portfolio_id, symbol, market):
         return f"{portfolio_id}-{market}-{symbol}"
     
-    def import_file(self, file_path: TextIO, portfolio_name: str, country_code: str, use_seperate_income_account: bool, use_usd_eur_account: bool, delete_existing: bool):
+    def import_file(self, file_path: TextIO, portfolio_name: str, country_code: str, use_seperate_income_account: bool, use_usd_eur_account: bool, delete_existing: bool, min_date: datetime.date):
         portfolio_id, cash_accounts = self._get_or_create_portfolio(portfolio_name, country_code, use_seperate_income_account, use_usd_eur_account, delete_existing)
         
         portfolio_holdings = self._api_client.get_portfolio_holdings(portfolio_id)['holdings']
@@ -57,7 +58,8 @@ class SharesightCsvImporter:
         with open(file_path, mode='r', encoding='utf-8-sig') as file:
             reader = csv.DictReader(file)
             print(f"Found columns in CSV: {reader.fieldnames}")
-            for data_row in reader:
+            reader_matching_dates = reader if not min_date else filter(lambda row: datetime.datetime.strptime(row['transaction_date'], "%Y-%m-%d").date() > min_date, reader)
+            for data_row in reader_matching_dates:
                 log_line_prefix = f"Line {reader.line_num} ({data_row['transaction_type']})"
                 api_endpoint_type = self.TRANSACTION_TYPE_TO_API_ENDPOINT.get(data_row.get('transaction_type'))
                 holding_id_lookup_key = self.get_portfolio_holdings_lookup_key(portfolio_id, data_row.get("symbol"), data_row.get("market"))
@@ -85,14 +87,15 @@ class SharesightCsvImporter:
                         next_data_row = reader.__next__()
                         self._process_merge(portfolio_id, existing_holding_id, log_line_prefix, next_data_row)
                     case 'cash':
-                        cash_account_id = cash_accounts[data_row.get("cash_account")]
+                        cash_account_id = cash_accounts[data_row.get("cash_account") or ("CAPITAL")]
                         self._process_cash(cash_account_id, log_line_prefix, data_row)
                     case _:
                         print(f"{log_line_prefix}: Unable to map {data_row.get('transaction_type')} to an API endpoint")
                         return None
         print(f"Syncing cash accounts")
         for cash_account in set(cash_accounts.values()):
-            self._api_client.resync_cash_account(cash_account)
+            if cash_account:
+                self._api_client.resync_cash_account(cash_account)
 
     def _get_portfolio_by_name(self, portfolio_name: str):
         portfolios = self._api_client.get_portfolios().get('portfolios', [])
@@ -100,14 +103,15 @@ class SharesightCsvImporter:
         if portfolio:
             portfolio_id = portfolio['id']
             cash_accounts = self._api_client.get_cash_accounts(portfolio_id).get('cash_accounts', [])
-            print(f"{cash_accounts}")
-            return portfolio_id, {
+            cash_accounts_lookup = {
                 "CAPITAL": portfolio['trade_sync_cash_account_id'], 
                 "INCOME": portfolio['payout_sync_cash_account_id'],
                 "GBP": next((item for item in cash_accounts if item["currency"] == "GBP"), {}).get('id'),
                 "USD": next((item for item in cash_accounts if item["currency"] == "EUR"), {}).get('id'),
                 "EUR": next((item for item in cash_accounts if item["currency"] == "EUR"), {}).get('id'),
             }
+            print(f"cash accounts: {cash_accounts_lookup}")
+            return portfolio_id,cash_accounts_lookup
         else:
             return None, {}
 
@@ -216,8 +220,7 @@ class SharesightCsvImporter:
         response = self._api_client.try_create_trade(api_request_data)
         errors,response_json  = self._get_errors(response)
         if (response.status_code != 200 and data_row.get("transaction_type") == "OPENING_BALANCE"):
-            # errors = response_json.get('errors')
-            # is_duplicate_tx = errors and 'unique_identifier' in errors and errors['unique_identifier'][0] == "A tr
+            self._print_response_status(log_line_prefix, api_request_data, response)
             print(f"{log_line_prefix}: Falling back to BUY transaction type, this will need modifying in the UI")
             api_request_data['transaction_type'] = "BUY"
             response = self._api_client.try_create_trade(api_request_data)
@@ -234,7 +237,7 @@ class SharesightCsvImporter:
         holding_id = response_data.get('holding_id') if response_data else None
         # create payout too as sharesight doesn't duplicate these into the cash account
         if is_capital_call_or_return or country_code == "AU" or len(cash_accounts) > 2:
-            cash_account_id = cash_accounts[data_row.get("cash_account") or (cash_accounts["INCOME"] if is_capital_call_or_return else "CAPITAL")]
+            cash_account_id = cash_accounts[data_row.get("cash_account") or ("INCOME" if is_capital_call_or_return else "CAPITAL")]
             self._process_cash(cash_account_id, log_line_prefix, data_row)
         return holding_id
 

@@ -102,9 +102,9 @@ class SharesightApiClient:
             json=merge_data
         )
 
-    def try_delete_custom_instruments(self, suffix):
+    def try_delete_custom_instruments(self, portfolio_id, suffix):
         custom_investments = self._make_request('get', 
-            f'{self.API_V3_BASE_URL}custom_investments')
+            f'{self.API_V3_BASE_URL}custom_investments?portfolio_id={portfolio_id}')
         for custom_investment in custom_investments.json().get('custom_investments', []):
             # if name ends with suffix then delete
             if custom_investment['name'].endswith(suffix):

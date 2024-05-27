@@ -156,12 +156,11 @@ class SharesightCsvImporter:
 
     def _get_or_create_portfolio(self, portfolio_name, country_code, use_seperate_income_account, use_usd_eur_account, delete_existing):
         portfolio_id,cash_accounts = self._get_portfolio_by_name(portfolio_name)
-        if (portfolio_id and delete_existing):
-            print(f"Removing portfolio {portfolio_id}")
-            self._api_client.delete_portfolio(portfolio_id)
-            portfolio_id, cash_accounts = None, {}
         if (delete_existing):
-            self._api_client.try_delete_custom_instruments(self.CUSTOM_INSTRUMENT_SUFFIX)
+            if (portfolio_id):
+                print(f"Removing existing portfolio {portfolio_id}")
+                self._api_client.delete_portfolio(portfolio_id)
+            portfolio_id, cash_accounts = None, {}
         if (portfolio_id == None):
             portfolio_id, cash_accounts = self._create_portfolio_and_cash_accounts(portfolio_name, country_code, use_seperate_income_account, use_usd_eur_account)
         return portfolio_id,cash_accounts
@@ -177,16 +176,17 @@ class SharesightCsvImporter:
         response = self._api_client.try_create_holding_merge(portfolio_id, merge_data)
         errors,response_json  = self._get_errors(response)
         if (errors and 'symbol' in errors and errors['symbol'][0] == "^Can't find instrument for this market and share code"):
-            errors = self._create_missing_instrument(log_line_prefix, data_row)
+            errors = self._create_missing_instrument(log_line_prefix, portfolio_id, data_row)
             if (errors == []):
                 response = self._api_client.try_create_holding_merge(portfolio_id, merge_data)
                 self._print_response_status(log_line_prefix, merge_data, response)
         else:
             self._print_response_status(log_line_prefix, merge_data, response)
 
-    def _create_missing_instrument(self, log_line_prefix, data_row):
+    def _create_missing_instrument(self, log_line_prefix, portfolio_id, data_row):
         # create custom instrument
         custom_investment_data = {
+            "portfolio_id": portfolio_id,
             "code": data_row.get("symbol"),
             "name": data_row.get("symbol_name") + f" {self.CUSTOM_INSTRUMENT_SUFFIX}",
             "country_code": "LU" if data_row.get("brokerage_currency_code") == "EUR" else "GB" if not data_row.get("brokerage_currency_code") else data_row.get("brokerage_currency_code")[:2],
@@ -226,7 +226,7 @@ class SharesightCsvImporter:
             response = self._api_client.try_create_trade(api_request_data)
             self._print_response_status(log_line_prefix, api_request_data, response)
         elif (errors and 'instrument_code' in errors and errors['instrument_code'][0] == "^Instrument does not exist"):
-            errors = self._create_missing_instrument(log_line_prefix, data_row)
+            errors = self._create_missing_instrument(log_line_prefix, portfolio_id, data_row)
             if (errors == []):
                 response = self._api_client.try_create_trade(api_request_data)
                 self._print_response_status(log_line_prefix, api_request_data, response)

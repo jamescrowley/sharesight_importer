@@ -85,9 +85,9 @@ class SharesightApiClient:
             f"{self.API_V2_BASE_URL}portfolios.json"
         ).json()
 
-    def get_payouts(self, portfolio_id, date):
+    def get_payouts(self, portfolio_id):
         return self._make_request('get', 
-            f"{self.API_V2_BASE_URL}portfolios/{portfolio_id}/payouts.json?start_date={date}&end_date={date}"
+            f"{self.API_V2_BASE_URL}portfolios/{portfolio_id}/payouts.json"
         ).json()
     
     def try_create_custom_investment(self, instrument_data):

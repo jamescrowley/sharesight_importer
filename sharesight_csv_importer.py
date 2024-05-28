@@ -48,19 +48,27 @@ class SharesightCsvImporter:
     def __init__(self, api_client: SharesightApiClient):
         self._api_client = api_client
 
-    def get_portfolio_holdings_lookup_key(self, portfolio_id, symbol, market):
+    def get_portfolio_holdings_lookup_key(self, portfolio_id: str, symbol: str, market: str):
         return f"{portfolio_id}-{market}-{symbol}"
+
+    def get_portfolio_payouts_lookup_key(self, portfolio_id: str, holding_id: str, paid_on):
+        return f"{portfolio_id}-{holding_id}-{paid_on}"
     
     def import_file(self, file_path: TextIO, portfolio_name: str, country_code: str, use_seperate_income_account: bool, use_usd_eur_account: bool, delete_existing: bool, min_date: datetime.date):
         portfolio_id, cash_accounts = self._get_or_create_portfolio(portfolio_name, country_code, use_seperate_income_account, use_usd_eur_account, delete_existing)
-        
+        # payouts don't have a unique id, so we have to fetch them and de-duplicate ourselves
+        portfolio_payouts = self._api_client.get_payouts(portfolio_id).get('payouts')
+        portfolio_payouts_lookup = {self.get_portfolio_payouts_lookup_key(portfolio_id, p['holding_id'], p['paid_on']): p['id'] for p in portfolio_payouts}
         portfolio_holdings = self._api_client.get_portfolio_holdings(portfolio_id)['holdings']
         portfolio_holdings_lookup = {self.get_portfolio_holdings_lookup_key(portfolio_id, h['instrument']['code'], h['instrument']['market_code']): h['id'] for h in portfolio_holdings}
 
         with open(file_path, mode='r', encoding='utf-8-sig') as file:
             reader = csv.DictReader(file)
             print(f"Found columns in CSV: {reader.fieldnames}")
-            reader_matching_dates = reader if not min_date else filter(lambda row: datetime.datetime.strptime(row['transaction_date'], "%Y-%m-%d").date() > min_date, reader)
+            reader_matching_dates = reader
+            if min_date:
+                print(f"Filtering transactions before {min_date}")
+                reader_matching_dates = filter(lambda row: datetime.datetime.strptime(row['transaction_date'], "%Y-%m-%d").date() > min_date, reader)
             for data_row in reader_matching_dates:
                 log_line_prefix = f"Line {reader.line_num} ({data_row['transaction_type']})"
                 api_endpoint_type = self.TRANSACTION_TYPE_TO_API_ENDPOINT.get(data_row.get('transaction_type'))
@@ -238,7 +246,11 @@ class SharesightCsvImporter:
         self._process_cash(cash_account_id, log_line_prefix, data_row)
         return holding_id
 
-    def _process_payout(self, portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id):
+    def _process_payout(self, portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup):
+        existing_payout = portfolio_payouts_lookup.get(self.get_portfolio_payouts_lookup_key(portfolio_id, existing_holding_id, data_row.get("transaction_date")))
+        if (existing_payout):
+            print(f"{log_line_prefix}: Skipping payout as it already exists")
+            return
         api_request_data = {
             "portfolio_id": portfolio_id,
             "holding_id": existing_holding_id,
@@ -276,7 +288,7 @@ class SharesightCsvImporter:
                 if not errors:
                     errors = [ response_json.get('error') ]
             except json.decoder.JSONDecodeError as e:
-                response_json = { "error": f"Error decoding JSON response: {e}" }
+                response_json = { "error": f"Error decoding JSON response: {e}, {response.text}" }
                 errors = []
             return errors, response_json
         return None, None

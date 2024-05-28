@@ -21,6 +21,8 @@ from sharesight_api_client import SharesightApiClient
 
 class SharesightCsvImporter:
     
+    INCOME_ACCOUNT_SUFFIX = "Income Account"
+    CAPITAL_ACCOUNT_SUFFIX = "Capital Account"
     TRANSACTION_TYPE_TO_API_ENDPOINT = {
         "DIVIDEND": "payout",
         "BUY": "trade",
@@ -77,11 +79,9 @@ class SharesightCsvImporter:
                         existing_holding_id = portfolio_holdings_lookup.get(holding_id_lookup_key)
                         if (existing_holding_id == None):
                             print(f'{log_line_prefix}: Unable to find holding id matching {data_row.get("symbol")}, {data_row.get("market")}, skipping payout')
-                        elif (not delete_existing):
-                            print(f"{log_line_prefix}: Skipping for now, as we cannot prevent duplicates when not a fresh portfolio")
                         else:
-                            cash_account_id = cash_accounts[data_row.get("cash_account") or ("INCOME" if country_code == 'AU' else None)]
-                            self._process_payout(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id)
+                            cash_account_id = cash_accounts[data_row.get("cash_account") or ("INCOME")]
+                            self._process_payout(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup)
                     case 'merge':
                         existing_holding_id = portfolio_holdings_lookup.get(holding_id_lookup_key)
                         next_data_row = reader.__next__()
@@ -103,9 +103,10 @@ class SharesightCsvImporter:
         if portfolio:
             portfolio_id = portfolio['id']
             cash_accounts = self._api_client.get_cash_accounts(portfolio_id).get('cash_accounts', [])
+            capital_account = next((item for item in cash_accounts if item["name"].endswith(self.CAPITAL_ACCOUNT_SUFFIX)), {}).get('id')
             cash_accounts_lookup = {
-                "CAPITAL": portfolio['trade_sync_cash_account_id'], 
-                "INCOME": portfolio['payout_sync_cash_account_id'],
+                "CAPITAL": capital_account,
+                "INCOME": next((item for item in cash_accounts if item["name"].endswith(self.INCOME_ACCOUNT_SUFFIX)), {}).get('id') or capital_account,
                 "GBP": next((item for item in cash_accounts if item["currency"] == "GBP"), {}).get('id'),
                 "USD": next((item for item in cash_accounts if item["currency"] == "EUR"), {}).get('id'),
                 "EUR": next((item for item in cash_accounts if item["currency"] == "EUR"), {}).get('id'),
@@ -126,16 +127,14 @@ class SharesightCsvImporter:
 
         portfolio_id = self._api_client.create_portfolio(portfolio_data).get('id')
         print(f"Created portfolio {portfolio_id}")
-        capital_cash_account_id = self._api_client.create_cash_account(portfolio_id, {"name": f"{portfolio_name} Capital Account", "currency": "GBP"}).get('cash_account').get('id')
+        capital_cash_account_id = self._api_client.create_cash_account(portfolio_id, {"name": f"{portfolio_name} {self.CAPITAL_ACCOUNT_SUFFIX}", "currency": "GBP"}).get('cash_account').get('id')
         print(f"Created cash account {capital_cash_account_id}")
         if (use_seperate_income_account):
-            income_cash_account_id = self._api_client.create_cash_account(portfolio_id, {"name": f"{portfolio_name} Income Account", "currency": "GBP"}).get('cash_account').get('id')
+            income_cash_account_id = self._api_client.create_cash_account(portfolio_id, {"name": f"{portfolio_name} {self.INCOME_ACCOUNT_SUFFIX}", "currency": "GBP"}).get('cash_account').get('id')
             print(f"Created income cash account {income_cash_account_id}")
         else:
             income_cash_account_id = capital_cash_account_id
-        # this was commented out, can't remember why?
-        self._api_client.update_portfolio(portfolio_id, {"trade_sync_cash_account_id": capital_cash_account_id, "payout_sync_cash_account_id": income_cash_account_id })
-        
+
         if (use_usd_eur_account):
             usd_cash_account_id = self._api_client.create_cash_account(portfolio_id, {"name": f"{portfolio_name} USD Account", "currency": "USD"}).get('cash_account').get('id')
             print(f"Created USD cash account {usd_cash_account_id}")
@@ -232,13 +231,11 @@ class SharesightCsvImporter:
                 self._print_response_status(log_line_prefix, api_request_data, response)
         else:
             self._print_response_status(log_line_prefix, api_request_data, response)
-
+        
         response_data = response.json().get('trade')
         holding_id = response_data.get('holding_id') if response_data else None
-        # create payout too as sharesight doesn't duplicate these into the cash account
-        if is_capital_call_or_return or country_code == "AU" or len(cash_accounts) > 2:
-            cash_account_id = cash_accounts[data_row.get("cash_account") or ("INCOME" if is_capital_call_or_return else "CAPITAL")]
-            self._process_cash(cash_account_id, log_line_prefix, data_row)
+        cash_account_id = cash_accounts[data_row.get("cash_account") or ("INCOME" if is_capital_call_or_return else "CAPITAL")]
+        self._process_cash(cash_account_id, log_line_prefix, data_row)
         return holding_id
 
     def _process_payout(self, portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id):
@@ -251,13 +248,16 @@ class SharesightCsvImporter:
             "currency_code": data_row.get("currency_code"),
             "exchange_rate": data_row.get("exchange_rate_gbp") if country_code == "GB" and data_row.get("exchange_rate_gbp") else data_row.get("exchange_rate_aud") if country_code=="AU" and data_row.get("exchange_rate_aud") else "1",
         }
+
         response = self._api_client.try_create_payout(api_request_data)
         self._print_response_status(log_line_prefix, api_request_data, response)
-        # when currency of cash account doesn't match the portfolio, we need to record in the cash account too
-        if cash_account_id != None:
-            self._process_cash(cash_account_id, log_line_prefix, data_row)
+        self._process_cash(cash_account_id, log_line_prefix, data_row)
     
     def _process_cash(self, cash_account_id, log_line_prefix, data_row):
+        is_transfer = data_row.get("transaction_type") == "OPENING_BALANCE" or data_row.get("transaction_type") == "CANCEL"
+        if (is_transfer):
+            print(f"{log_line_prefix}: Skipping cash transaction as it is a transfer")
+            return
         api_request_data = {
             "date_time": data_row.get("transaction_date"),
             "description": data_row.get("description"),

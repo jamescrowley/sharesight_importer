@@ -90,6 +90,29 @@ class SharesightApiClient:
             f"{self.API_V2_BASE_URL}portfolios/{portfolio_id}/payouts.json"
         ).json()
     
+    def delete_all_trades(self, portfolio_id):
+        trades = self._make_request('get', 
+            f"{self.API_V2_BASE_URL}portfolios/{portfolio_id}/trades.json"
+        ).json()
+        for trade in trades.get('trades', []):
+            self._make_request('delete', 
+                f"{self.API_V2_BASE_URL}trades/{trade.get('id')}"
+            )
+    
+    def delete_all_cash_account_transactions_in_portfolio(self, portfolio_id):
+        cash_accounts = self.get_cash_accounts(portfolio_id)
+        for cash_account in cash_accounts.get('cash_accounts', []):
+            self.delete_all_cash_account_transactions(cash_account.get('id'))
+
+    def delete_all_cash_account_transactions(self, cash_account_id):
+        transactions = self._make_request('get', 
+            f"{self.API_V2_BASE_URL}cash_accounts/{cash_account_id}/cash_account_transactions.json"
+        ).json()
+        for transaction in transactions.get('cash_account_transactions', []):
+            self._make_request('delete', 
+                f"{self.API_V2_BASE_URL}cash_account_transactions/{transaction.get('id')}"
+            )
+    
     def try_create_custom_investment(self, instrument_data):
         return self._make_request_without_status_check('post', 
             f'{self.API_V3_BASE_URL}custom_investments', 

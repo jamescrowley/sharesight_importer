@@ -113,6 +113,11 @@ class SharesightApiClient:
                 f"{self.API_V2_BASE_URL}cash_account_transactions/{transaction.get('id')}"
             )
     
+    def get_custom_investments(self, portfolio_id):
+        return self._make_request('get', 
+            f"{self.API_V3_BASE_URL}custom_investments?portfolio_id={portfolio_id}"
+        ).json()
+    
     def try_create_custom_investment(self, instrument_data):
         return self._make_request_without_status_check('post', 
             f'{self.API_V3_BASE_URL}custom_investments', 

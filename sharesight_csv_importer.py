@@ -48,6 +48,7 @@ class SharesightCsvImporter:
 
     def __init__(self, api_client: SharesightApiClient):
         self._api_client = api_client
+        self.portfolio_custom_investments_lookup = {}
 
     def get_portfolio_holdings_lookup_key(self, portfolio_id: str, symbol: str, market: str):
         return f"{portfolio_id}-{market}-{symbol}".lower()
@@ -62,6 +63,8 @@ class SharesightCsvImporter:
         portfolio_payouts_lookup = {self.get_portfolio_payouts_lookup_key(portfolio_id, p['holding_id'], p['paid_on']): p['id'] for p in portfolio_payouts}
         portfolio_holdings = self._api_client.get_portfolio_holdings(portfolio_id)['holdings']
         portfolio_holdings_lookup = {self.get_portfolio_holdings_lookup_key(portfolio_id, h['instrument']['code'], h['instrument']['market_code']): h['id'] for h in portfolio_holdings}
+        portfolio_custom_investments = self._api_client.get_custom_investments(portfolio_id)['custom_investments']
+        self.portfolio_custom_investments_lookup = {self.get_portfolio_holdings_lookup_key(portfolio_id, c['code'], 'OTHER'): c['id'] for c in portfolio_custom_investments}
 
         with open(file_path, mode='r', encoding='utf-8-sig') as file:
             reader = csv.DictReader(file)
@@ -102,8 +105,10 @@ class SharesightCsvImporter:
                             self._process_payout(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup)
                     case 'merge':
                         existing_holding_id = portfolio_holdings_lookup.get(holding_id_lookup_key)
+                        existing_custom_instrument_id = portfolio_custom_investments_lookup.get(holding_id_lookup_key)
+                        print(f"{log_line_prefix}: existing_holding_id: {existing_holding_id}, existing_custom_instrument_id: {existing_custom_instrument_id}")
                         next_data_row = reader.__next__()
-                        self._process_merge(portfolio_id, existing_holding_id, log_line_prefix, next_data_row)
+                        self._process_merge(portfolio_id, existing_custom_instrument_id or existing_holding_id, log_line_prefix, next_data_row)
                     case 'cash':
                         cash_account_id = cash_accounts[data_row.get("cash_account") or ("CAPITAL")]
                         self._process_cash(cash_account_id, log_line_prefix, data_row)
@@ -195,8 +200,7 @@ class SharesightCsvImporter:
         }
         response = self._api_client.try_create_holding_merge(portfolio_id, merge_data)
         errors,response_json  = self._get_errors(response)
-        if (errors and ('symbol' in errors and errors['symbol'][0] == "^Can't find instrument for this market and share code"
-                        or 'base' in errors and errors['base'][0] == "The resulting merge buy transaction is invalid: You do not have permission to create a holding with this instrument in this portfolio")):
+        if (errors and ('symbol' in errors and errors['symbol'][0] == "^Can't find instrument for this market and share code")):
             errors = self._create_missing_instrument(log_line_prefix, portfolio_id, data_row)
             if (errors == []):
                 response = self._api_client.try_create_holding_merge(portfolio_id, merge_data)
@@ -215,7 +219,11 @@ class SharesightCsvImporter:
         }
         print(f"{log_line_prefix}: Creating custom instrument {custom_investment_data['code']}")
         response = self._api_client.try_create_custom_investment(custom_investment_data)
-        errors = self._print_response_status(log_line_prefix, custom_investment_data, response)
+        errors, response_json = self._get_errors(response)
+        self._print_response_status(log_line_prefix, custom_investment_data, response)
+        if (response.status_code == 200):
+            self.portfolio_custom_investments_lookup[self.get_portfolio_holdings_lookup_key(portfolio_id, response_json.get('code'), 'OTHER')] = response_json.get('id')
+        
         return errors
 
     def _process_trade(self, portfolio_id, country_code, cash_accounts, log_line_prefix, data_row, portfolio_payouts_lookup):
@@ -254,25 +262,27 @@ class SharesightCsvImporter:
         }
         response = self._api_client.try_create_trade(api_request_data)
         errors,response_json  = self._get_errors(response)
-        self._print_response_status(log_line_prefix, api_request_data, response)
         # workaround to "We do not have a price on 18 Sep 2019" error
         if (response.status_code != 200 and data_row.get("transaction_type") == "OPENING_BALANCE" and errors['market_price'][0] == "^We do not have a price on 18 Sep 2019"):
-            print(f"{log_line_prefix}: Falling back to BUY transaction type, this will need modifying in the UI")
+            print(f"{log_line_prefix}: {response.status_code} (handled) {response.url} Falling back to BUY transaction type, this will need modifying in the UI")
             api_request_data['transaction_type'] = "BUY"
             response = self._api_client.try_create_trade(api_request_data)
             errors,response_json = self._get_errors(response)
             self._print_response_status(log_line_prefix, api_request_data, response)
         if (errors and 'instrument_id' in errors and errors['instrument_id'][0] == "^Instrument does not exist"):
+            print(f"{log_line_prefix}: {response.status_code} (handled) {response.url} ")
             if (data_row['market'].lower()!='other'):
-                print(f"{log_line_prefix}: Instrument data points to {data_row['market']} but needs to be 'other' for custom instrument")
+                print(f"{log_line_prefix}: WARN Instrument data points to {data_row['market']} but needs to be 'other' for custom instrument")
             errors = self._create_missing_instrument(log_line_prefix, portfolio_id, data_row)
             if (errors == []):
                 response = self._api_client.try_create_trade(api_request_data)
                 errors,response_json = self._get_errors(response)
                 self._print_response_status(log_line_prefix, api_request_data, response)
-        # else:
-            # print(f"{log_line_prefix}: some other scenario")
-            # self._print_response_status(log_line_prefix, api_request_data, response)
+            else:
+                print(f"{log_line_prefix}: ERROR Unable to create custom instrument {data_row.get('symbol')}")
+                self._print_response_status(log_line_prefix, api_request_data, response)
+        else:
+            self._print_response_status(log_line_prefix, api_request_data, response)
         
         response_data = response_json.get('trade')
         holding_id = response_data.get('holding_id') if response_data else None

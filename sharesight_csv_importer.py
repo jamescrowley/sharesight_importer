@@ -48,7 +48,6 @@ class SharesightCsvImporter:
 
     def __init__(self, api_client: SharesightApiClient):
         self._api_client = api_client
-        self.portfolio_custom_investments_lookup = {}
 
     def get_portfolio_holdings_lookup_key(self, portfolio_id: str, symbol: str, market: str):
         return f"{portfolio_id}-{market}-{symbol}".lower()
@@ -64,7 +63,6 @@ class SharesightCsvImporter:
         portfolio_holdings = self._api_client.get_portfolio_holdings(portfolio_id)['holdings']
         portfolio_holdings_lookup = {self.get_portfolio_holdings_lookup_key(portfolio_id, h['instrument']['code'], h['instrument']['market_code']): h['id'] for h in portfolio_holdings}
         portfolio_custom_investments = self._api_client.get_custom_investments(portfolio_id)['custom_investments']
-        self.portfolio_custom_investments_lookup = {self.get_portfolio_holdings_lookup_key(portfolio_id, c['code'], 'OTHER'): c['id'] for c in portfolio_custom_investments}
 
         with open(file_path, mode='r', encoding='utf-8-sig') as file:
             reader = csv.DictReader(file)
@@ -105,10 +103,9 @@ class SharesightCsvImporter:
                             self._process_payout(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup)
                     case 'merge':
                         existing_holding_id = portfolio_holdings_lookup.get(holding_id_lookup_key)
-                        existing_custom_instrument_id = portfolio_custom_investments_lookup.get(holding_id_lookup_key)
-                        print(f"{log_line_prefix}: existing_holding_id: {existing_holding_id}, existing_custom_instrument_id: {existing_custom_instrument_id}")
+                        print(f"{log_line_prefix}: existing_holding_id: {existing_holding_id}")
                         next_data_row = reader.__next__()
-                        self._process_merge(portfolio_id, existing_custom_instrument_id or existing_holding_id, log_line_prefix, next_data_row)
+                        self._process_merge(portfolio_id, existing_holding_id, log_line_prefix, next_data_row)
                     case 'cash':
                         cash_account_id = cash_accounts[data_row.get("cash_account") or ("CAPITAL")]
                         self._process_cash(cash_account_id, log_line_prefix, data_row)
@@ -194,9 +191,11 @@ class SharesightCsvImporter:
         merge_data = {
             "holding_id": existing_holding_id,
             "merge_date": data_row.get("transaction_date"),
-            "quantity": data_row.get("quantity"),
-            "symbol": data_row.get("symbol"),
-            "market": data_row.get("market")
+            "quantity": float(data_row.get("quantity")),
+            "symbol": data_row.get("symbol") if data_row['market'].lower()!='other' else data_row.get("symbol") + f"-{portfolio_id}",
+            "market": data_row.get("market").upper(),
+            "cancelled_price": data_row.get("price"),
+            "comments": "none"
         }
         response = self._api_client.try_create_holding_merge(portfolio_id, merge_data)
         errors,response_json  = self._get_errors(response)
@@ -212,7 +211,7 @@ class SharesightCsvImporter:
         # create custom instrument
         custom_investment_data = {
             "portfolio_id": portfolio_id,
-            "code": data_row.get("symbol"),
+            "code": data_row.get("symbol") + f"-{portfolio_id}",
             "name": data_row.get("symbol_name") + f" {self.CUSTOM_INSTRUMENT_SUFFIX}",
             "country_code": "LU" if data_row.get("instrument_currency_code") == "EUR" else "GB" if not data_row.get("instrument_currency_code") else data_row.get("instrument_currency_code")[:2],
             "investment_type": data_row.get("symbol_type") if data_row.get("symbol_type") else "MANAGED_FUND" #  ORDINARY, WARRANT, SHAREFUND, PROPFUND, PREFERENCE, STAPLEDSEC, OPTIONS, RIGHTS, MANAGED_FUND, FIXED_INTEREST, PIE
@@ -221,9 +220,6 @@ class SharesightCsvImporter:
         response = self._api_client.try_create_custom_investment(custom_investment_data)
         errors, response_json = self._get_errors(response)
         self._print_response_status(log_line_prefix, custom_investment_data, response)
-        if (response.status_code == 200):
-            self.portfolio_custom_investments_lookup[self.get_portfolio_holdings_lookup_key(portfolio_id, response_json.get('code'), 'OTHER')] = response_json.get('id')
-        
         return errors
 
     def _process_trade(self, portfolio_id, country_code, cash_accounts, log_line_prefix, data_row, portfolio_payouts_lookup):
@@ -245,7 +241,7 @@ class SharesightCsvImporter:
             "transaction_type": data_row.get("transaction_type"),
             "transaction_date": data_row.get("transaction_date"),
             "portfolio_id": portfolio_id,
-            "symbol": data_row.get("symbol"),
+            "symbol": data_row.get("symbol") if data_row['market'].lower()!='other' else data_row.get("symbol") + f"-{portfolio_id}",
             "market": data_row.get("market"),
             "quantity": data_row.get("quantity"),
             "price": data_row.get("price"), # in instrument currency
@@ -264,13 +260,13 @@ class SharesightCsvImporter:
         errors,response_json  = self._get_errors(response)
         # workaround to "We do not have a price on 18 Sep 2019" error
         if (response.status_code != 200 and data_row.get("transaction_type") == "OPENING_BALANCE" and errors['market_price'][0] == "^We do not have a price on 18 Sep 2019"):
-            print(f"{log_line_prefix}: {response.status_code} (handled) {response.url} Falling back to BUY transaction type, this will need modifying in the UI")
+            print(f"{log_line_prefix}: {response.status_code} (no price handled) {response.url} Falling back to BUY transaction type, this will need modifying in the UI")
             api_request_data['transaction_type'] = "BUY"
             response = self._api_client.try_create_trade(api_request_data)
             errors,response_json = self._get_errors(response)
             self._print_response_status(log_line_prefix, api_request_data, response)
         if (errors and 'instrument_id' in errors and errors['instrument_id'][0] == "^Instrument does not exist"):
-            print(f"{log_line_prefix}: {response.status_code} (handled) {response.url} ")
+            print(f"{log_line_prefix}: {response.status_code} (instrument missing handled) {response.url} ")
             if (data_row['market'].lower()!='other'):
                 print(f"{log_line_prefix}: WARN Instrument data points to {data_row['market']} but needs to be 'other' for custom instrument")
             errors = self._create_missing_instrument(log_line_prefix, portfolio_id, data_row)
@@ -297,13 +293,13 @@ class SharesightCsvImporter:
             accrued_income_row.update({"amount_in_gbp": abs(float(data_row.get("accrued_income")))})
             accrued_income_row.update({"unique_identifier": f"{data_row.get('unique_identifier')}-accrued_income"})
             if (data_row.get("transaction_type") == "SELL"):
+                # sale price will exclude accrued income, so we add back as income
                 self._process_payout(portfolio_id, country_code, cash_account_id, log_line_prefix, accrued_income_row, holding_id, portfolio_payouts_lookup)
             elif (data_row.get("transaction_type") == "BUY"):
-                if country_code == "GB":
-                    print(f"{log_line_prefix}: TODO: adjust capital call on interest payment")
+                # the bond purchase is dirty, so some of the payment is interest and some is principal
+                # so the original accrued income is a capital call
                 accrued_income_row.update({"transaction_type": "CAPITAL_CALL"})
                 self._process_trade(portfolio_id, country_code, cash_accounts, log_line_prefix, accrued_income_row, portfolio_payouts_lookup)
-        
         return holding_id
 
     def _process_payout(self, portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup):

@@ -1,3 +1,4 @@
+import time
 import curlify
 import requests
 
@@ -32,8 +33,14 @@ class SharesightApiClient:
             "Content-Type": "application/json"
         } if self._access_token else {}
         response = requests.request(method, url, json=json, headers = headers or default_headers)
+        if (response.status_code == 504 or response.status_code == 502):
+            # gateway timeout, wait and then retry
+            print(f"Gateway timeout, waiting and retrying: {url}")
+            time.sleep(5)
+            response = requests.request(method, url, json=json, headers = headers or default_headers)
         if (self._output_curl):
             print(curlify.to_curl(response.request))
+
         return response
 
     def _make_request(self, method, url, headers=None, json=None):

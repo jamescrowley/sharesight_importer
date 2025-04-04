@@ -52,17 +52,28 @@ class SharesightCsvImporter:
     def get_portfolio_holdings_lookup_key(self, portfolio_id: str, symbol: str, market: str):
         return f"{portfolio_id}-{market}-{symbol}".lower()
 
-    def get_portfolio_payouts_lookup_key(self, portfolio_id: str, holding_id: str, paid_on):
+    def get_portfolio_payouts_lookup_key(self, portfolio_id: str, holding_id: str, paid_on: str):
         return f"{portfolio_id}-{holding_id}-{paid_on}".lower()
+
+    def _remove_portfolio_qualifier_from_symbol(self, symbol: str, portfolio_id: str):
+        return symbol[:-len(f"-{portfolio_id}")] if symbol.endswith(f"-{portfolio_id}") else symbol
+
+    def _get_symbol_key_with_portfolio_qualifier_for_custom_instruments(self, data_row, portfolio_id: str):
+        return data_row.get("symbol") if data_row['market'].lower()!='other' else data_row.get("symbol") + f"-{portfolio_id}"
+
+    def _get_unique_cash_accounts_in_file(self, file_path: TextIO):
+        with open(file_path, mode='r', encoding='utf-8-sig') as file:
+            reader = csv.DictReader(file)
+            return set( (data_row.get("amount_currency"),data_row.get("cash_account") or "") for data_row in reader)
     
-    def import_file(self, file_path: TextIO, portfolio_name: str, country_code: str, use_seperate_income_account: bool, use_usd_eur_account: bool, delete_existing: bool, min_date: datetime.date, min_line: int, max_line: int):
-        portfolio_id, cash_accounts = self._get_or_create_portfolio(portfolio_name, country_code, use_seperate_income_account, use_usd_eur_account, delete_existing)
+    def import_file(self, file_path: TextIO, portfolio_name: str, country_code: str, delete_existing: bool, min_date: datetime.date, min_line: int, max_line: int, prices_file_path: TextIO):
+        cash_accounts_in_file = self._get_unique_cash_accounts_in_file(file_path)
+        portfolio_id, cash_accounts = self._get_or_create_portfolio(portfolio_name, country_code, cash_accounts_in_file, delete_existing)
         # payouts don't have a unique id, so we have to fetch them and de-duplicate ourselves
         portfolio_payouts = self._api_client.get_payouts(portfolio_id).get('payouts')
         portfolio_payouts_lookup = {self.get_portfolio_payouts_lookup_key(portfolio_id, p['holding_id'], p['paid_on']): p['id'] for p in portfolio_payouts}
         portfolio_holdings = self._api_client.get_portfolio_holdings(portfolio_id)['holdings']
         portfolio_holdings_lookup = {self.get_portfolio_holdings_lookup_key(portfolio_id, h['instrument']['code'], h['instrument']['market_code']): h['id'] for h in portfolio_holdings}
-        portfolio_custom_investments = self._api_client.get_custom_investments(portfolio_id)['custom_investments']
 
         with open(file_path, mode='r', encoding='utf-8-sig') as file:
             reader = csv.DictReader(file)
@@ -81,10 +92,13 @@ class SharesightCsvImporter:
             for data_row in filtered_reader:
                 log_line_prefix = f"Line {reader.line_num} ({data_row['transaction_type']})"
                 api_endpoint_type = self.TRANSACTION_TYPE_TO_API_ENDPOINT.get(data_row.get('transaction_type'))
+                data_row.update({"symbol": self._get_symbol_key_with_portfolio_qualifier_for_custom_instruments(data_row, portfolio_id)})
                 holding_id_lookup_key = self.get_portfolio_holdings_lookup_key(portfolio_id, data_row.get("symbol"), data_row.get("market"))
+                cash_account_id = cash_accounts[self._get_cash_account_lookup_key(data_row.get("amount_currency"), data_row.get("cash_account"))] if data_row.get("cash_account") else 0
+
                 match api_endpoint_type:
                     case 'trade':
-                        holding_id = self._process_trade(portfolio_id, country_code, cash_accounts, log_line_prefix, data_row, portfolio_payouts_lookup)
+                        holding_id = self._process_trade(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, portfolio_payouts_lookup)
                         if(holding_id):
                             print(f"{log_line_prefix}: Saved holding id {holding_id} in {holding_id_lookup_key}")
                             portfolio_holdings_lookup[holding_id_lookup_key] = holding_id
@@ -99,15 +113,17 @@ class SharesightCsvImporter:
                         if (existing_holding_id == None):
                             print(f'{log_line_prefix}: ERROR Unable to find holding id matching {holding_id_lookup_key} - {data_row.get("symbol")}, {data_row.get("market")}, skipping payout')
                         else:
-                            cash_account_id = cash_accounts[data_row.get("cash_account") or ("INCOME")]
                             self._process_payout(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup)
                     case 'merge':
                         existing_holding_id = portfolio_holdings_lookup.get(holding_id_lookup_key)
                         print(f"{log_line_prefix}: existing_holding_id: {existing_holding_id}")
                         next_data_row = reader.__next__()
+                        next_data_row.update({"symbol": self._get_symbol_key_with_portfolio_qualifier_for_custom_instruments(next_data_row, portfolio_id)})
+                        if (next_data_row.get("transaction_type") != "MERGE_BUY"):
+                            print(f"{log_line_prefix}: ERROR Expected MERGE_BUY but got {next_data_row.get('transaction_type')}")
+                            continue
                         self._process_merge(portfolio_id, existing_holding_id, log_line_prefix, next_data_row)
                     case 'cash':
-                        cash_account_id = cash_accounts[data_row.get("cash_account") or ("CAPITAL")]
                         self._process_cash(cash_account_id, log_line_prefix, data_row)
                     case _:
                         print(f"{log_line_prefix}: ERROR Unable to map {data_row.get('transaction_type')} to an API endpoint")
@@ -116,6 +132,28 @@ class SharesightCsvImporter:
         for cash_account in set(cash_accounts.values()):
             if cash_account:
                 self._api_client.resync_cash_account(cash_account)
+        if (prices_file_path):
+            print(f"Syncing custom instruments prices")
+            portfolio_custom_investments = self._api_client.get_custom_investments(portfolio_id)['custom_investments']
+            self.portfolio_custom_investments_lookup = {self._remove_portfolio_qualifier_from_symbol(c['code'], portfolio_id): c['id'] for c in portfolio_custom_investments}
+            with open(prices_file_path, mode='r', encoding='utf-8-sig') as file:
+                reader = csv.DictReader(file)
+                for data_row in reader:
+                    print(f"Syncing custom instrument price for {data_row['symbol']}")
+                    custom_investment_id = self.portfolio_custom_investments_lookup.get(data_row['symbol'])
+                    if custom_investment_id:
+                        api_request_data = {
+                            "last_traded_price": data_row['price'],
+                            "last_traded_on": data_row['date']
+                        }
+                        existing_prices = self._api_client.get_custom_investment_prices(custom_investment_id, data_row['date'], data_row['date'])['prices']
+                        if existing_prices:
+                            print(f"Found existing price for {data_row['symbol']} on {data_row['date']}")
+                            response = self._api_client.put_custom_investment_price(existing_prices[0]['id'], api_request_data)
+                        else:
+                            response = self._api_client.create_custom_investment_price(custom_investment_id, api_request_data)
+                        self._print_response_status(reader.line_num, api_request_data, response)
+
 
     def _get_portfolio_by_name(self, portfolio_name: str):
         portfolios = self._api_client.get_portfolios().get('portfolios', [])
@@ -123,20 +161,22 @@ class SharesightCsvImporter:
         if portfolio:
             portfolio_id = portfolio['id']
             cash_accounts = self._api_client.get_cash_accounts(portfolio_id).get('cash_accounts', [])
-            capital_account = next((item for item in cash_accounts if item["name"].endswith(self.CAPITAL_ACCOUNT_SUFFIX)), {}).get('id')
-            cash_accounts_lookup = {
-                "CAPITAL": capital_account,
-                "INCOME": next((item for item in cash_accounts if item["name"].endswith(self.INCOME_ACCOUNT_SUFFIX)), {}).get('id') or capital_account,
-                "GBP": next((item for item in cash_accounts if item["currency"] == "GBP"), {}).get('id'),
-                "USD": next((item for item in cash_accounts if item["currency"] == "EUR"), {}).get('id'),
-                "EUR": next((item for item in cash_accounts if item["currency"] == "EUR"), {}).get('id'),
-            }
+            cash_accounts_lookup = {self._get_cash_account_lookup_key(item["currency"], self._get_cash_account_name_from_sharesight_cash_account(item)): item["id"] for item in cash_accounts}
             print(f"cash accounts: {cash_accounts_lookup}")
             return portfolio_id,cash_accounts_lookup
         else:
             return None, {}
+    
+    def _get_cash_account_lookup_key(self, cash_account_currency: str, cash_account_name: str):
+        return f"{cash_account_currency}-{cash_account_name or 'Account'}"
 
-    def _create_portfolio_and_cash_accounts(self, portfolio_name: str, country_code: str, use_seperate_income_account: bool, use_usd_eur_account: bool):
+    def _get_cash_account_name_from_sharesight_cash_account(self, cash_account: dict):
+        if cash_account.get("name").endswith(f" ({cash_account.get('currency')})"):
+            return cash_account.get("name")[:-len(f" ({cash_account.get('currency')})")]
+        else:
+            return cash_account.get("name")
+
+    def _create_portfolio_and_cash_accounts(self, portfolio_name: str, country_code: str, cash_accounts_in_file: list[(str,str)]):
         print("Creating portfolio")
         portfolio_data = {
                 "name": portfolio_name,
@@ -146,34 +186,17 @@ class SharesightCsvImporter:
             }
 
         portfolio_id = self._api_client.create_portfolio(portfolio_data).get('id')
-        print(f"Created portfolio {portfolio_id}")
-        capital_cash_account_id = self._api_client.create_cash_account(portfolio_id, {"name": f"{portfolio_name} {self.CAPITAL_ACCOUNT_SUFFIX}", "currency": "GBP"}).get('cash_account').get('id')
-        print(f"Created cash account {capital_cash_account_id}")
-        if (use_seperate_income_account):
-            income_cash_account_id = self._api_client.create_cash_account(portfolio_id, {"name": f"{portfolio_name} {self.INCOME_ACCOUNT_SUFFIX}", "currency": "GBP"}).get('cash_account').get('id')
-            print(f"Created income cash account {income_cash_account_id}")
-        else:
-            income_cash_account_id = capital_cash_account_id
+        cash_accounts = {}
 
-        if (use_usd_eur_account):
-            usd_cash_account_id = self._api_client.create_cash_account(portfolio_id, {"name": f"{portfolio_name} USD Account", "currency": "USD"}).get('cash_account').get('id')
-            print(f"Created USD cash account {usd_cash_account_id}")
-            eur_cash_account_id = self._api_client.create_cash_account(portfolio_id, {"name": f"{portfolio_name} EUR Account", "currency": "EUR"}).get('cash_account').get('id')
-            print(f"Created EUR cash account {eur_cash_account_id}")
-            return portfolio_id,{
-                "INCOME": income_cash_account_id,
-                "CAPITAL": capital_cash_account_id,
-                "GBP": capital_cash_account_id,
-                "USD": usd_cash_account_id,
-                "EUR": eur_cash_account_id
-            }
-        else:
-            return portfolio_id,{
-                "INCOME": income_cash_account_id,
-                "CAPITAL": capital_cash_account_id
-            }
+        for (cash_account_currency,cash_account_name) in cash_accounts_in_file:
+            cash_account_full_name = f"{cash_account_name or 'Account'} ({cash_account_currency})"
+            cash_account_id = self._api_client.create_cash_account(portfolio_id, {"name": cash_account_full_name, "currency": cash_account_currency}).get('cash_account').get('id')
+            cash_accounts[self._get_cash_account_lookup_key(cash_account_currency, cash_account_name)] = cash_account_id
+            print(f"Created cash account {cash_account_full_name} with id {cash_account_id}")
+        
+        return portfolio_id,cash_accounts
 
-    def _get_or_create_portfolio(self, portfolio_name, country_code, use_seperate_income_account, use_usd_eur_account, delete_existing):
+    def _get_or_create_portfolio(self, portfolio_name, country_code, cash_accounts_in_file, delete_existing):
         portfolio_id,cash_accounts = self._get_portfolio_by_name(portfolio_name)
         if (delete_existing):
             if (portfolio_id):
@@ -184,17 +207,17 @@ class SharesightCsvImporter:
             #     self._api_client.delete_all_trades(portfolio_id)
                 portfolio_id, cash_accounts = None, {}
         if (portfolio_id == None):
-            portfolio_id, cash_accounts = self._create_portfolio_and_cash_accounts(portfolio_name, country_code, use_seperate_income_account, use_usd_eur_account)
+            portfolio_id, cash_accounts = self._create_portfolio_and_cash_accounts(portfolio_name, country_code, cash_accounts_in_file)
         return portfolio_id,cash_accounts
     
     def _process_merge(self, portfolio_id, existing_holding_id, log_line_prefix, data_row):
         merge_data = {
             "holding_id": existing_holding_id,
-            "merge_date": data_row.get("transaction_date"),
+            "merge_date": data_row.get("goes_ex_on") if data_row.get("goes_ex_on") else data_row.get("transaction_date"),
             "quantity": float(data_row.get("quantity")),
-            "symbol": data_row.get("symbol") if data_row['market'].lower()!='other' else data_row.get("symbol") + f"-{portfolio_id}",
+            "symbol": data_row.get("symbol"),
             "market": data_row.get("market").upper(),
-            "cancelled_price": data_row.get("price"),
+            #"cancelled_price": data_row.get("price"),
             "comments": "none"
         }
         response = self._api_client.try_create_holding_merge(portfolio_id, merge_data)
@@ -209,9 +232,12 @@ class SharesightCsvImporter:
 
     def _create_missing_instrument(self, log_line_prefix, portfolio_id, data_row):
         # create custom instrument
+        if (data_row['market'].lower()!='other'):
+            print(f"{log_line_prefix}: WARN Instrument data points to {data_row['market']} but needs to be 'other' for custom instrument")
+        
         custom_investment_data = {
             "portfolio_id": portfolio_id,
-            "code": data_row.get("symbol") + f"-{portfolio_id}",
+            "code": data_row.get("symbol"),
             "name": data_row.get("symbol_name") + f" {self.CUSTOM_INSTRUMENT_SUFFIX}",
             "country_code": "LU" if data_row.get("instrument_currency_code") == "EUR" else "GB" if not data_row.get("instrument_currency_code") else data_row.get("instrument_currency_code")[:2],
             "investment_type": data_row.get("symbol_type") if data_row.get("symbol_type") else "MANAGED_FUND" #  ORDINARY, WARRANT, SHAREFUND, PROPFUND, PREFERENCE, STAPLEDSEC, OPTIONS, RIGHTS, MANAGED_FUND, FIXED_INTEREST, PIE
@@ -222,26 +248,15 @@ class SharesightCsvImporter:
         self._print_response_status(log_line_prefix, custom_investment_data, response)
         return errors
 
-    def _process_trade(self, portfolio_id, country_code, cash_accounts, log_line_prefix, data_row, portfolio_payouts_lookup):
+    def _process_trade(self, portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, portfolio_payouts_lookup):
         is_capital_call_or_return = data_row.get("transaction_type") == "CAPITAL_CALL" or data_row.get("transaction_type") == "CAPITAL_RETURN"
-        # if (data_row.get("accrued_income") and data_row.get("transaction_type") == "SELL"):
-        #     # add a seperate income payout for the accrued income
-        #     # this is from fixed deposits where the interest is paid at term
-        #     accrued_income_row = data_row.copy()
-        #     accrued_income_row.pop("accrued_income")
-        #     accrued_income_row.update({"amount_in_gbp": abs(float(data_row.get("accrued_income")))})
-        #     accrued_income_row.update({"unique_identifier": f"{data_row.get('unique_identifier')}-accrued_income"})
-        #     self._process_payout(portfolio_id, country_code, cash_account_id, log_line_prefix, accrued_income_row, holding_id, portfolio_payouts_lookup)
-        #     data_row.update({"amount_in_gbp": data_row.get("amount_in_gbp") - abs(float(data_row.get("accrued_income")))})
-
-        # return holding_id
     
         api_request_data = {
             "unique_identifier": data_row.get("unique_identifier"),
             "transaction_type": data_row.get("transaction_type"),
             "transaction_date": data_row.get("transaction_date"),
             "portfolio_id": portfolio_id,
-            "symbol": data_row.get("symbol") if data_row['market'].lower()!='other' else data_row.get("symbol") + f"-{portfolio_id}",
+            "symbol": data_row.get("symbol"),
             "market": data_row.get("market"),
             "quantity": data_row.get("quantity"),
             "price": data_row.get("price"), # in instrument currency
@@ -249,10 +264,10 @@ class SharesightCsvImporter:
             # has to be in portfolio currency or instrument currency
             "brokerage": data_row.get("brokerage") if data_row.get("brokerage") else data_row.get("brokerage_in_gbp") if country_code == "GB" else data_row.get("brokerage_in_aud") if country_code == "AU" else "??",
             "brokerage_currency_code": data_row.get("brokerage_currency_code") if data_row.get("brokerage_currency_code") else "GBP" if country_code == "GB" else "AUD" if country_code == "AU" else "??",
-            "exchange_rate": data_row.get("exchange_rate_gbp") if country_code == "GB" and data_row.get("exchange_rate_gbp") else data_row.get("exchange_rate_aud") if country_code=="AU" and data_row.get("exchange_rate_aud") else "1",
+            "exchange_rate": data_row.get("exchange_rate_gbp") if country_code == "GB" else data_row.get("exchange_rate_aud") if country_code=="AU" else "??",
             # needs to be in portfolio currency
-            "cost_base": (data_row.get("amount_in_gbp") * 1 if country_code == "GB" else 1/float(data_row.get("exchange_rate_aud"))) if data_row.get("transaction_type") == "OPENING_BALANCE" else "",
-            "capital_return_value": str(abs(float(data_row.get("amount_in_gbp")))) if is_capital_call_or_return else "",
+            "cost_base": (data_row.get("amount_in_gbp") if country_code == "GB" else data_row.get("amount_in_aud") if country_code == "AU" else "??") if data_row.get("transaction_type") == "OPENING_BALANCE" else "",
+            "capital_return_value": str(abs(float(data_row.get("amount_in_gbp") if country_code == "GB" else data_row.get("amount_in_aud") if country_code == "AU" else "??"))) if is_capital_call_or_return else "",
             "paid_on": data_row.get("transaction_date") if is_capital_call_or_return else "",
             "comments": data_row.get("description")
         }
@@ -267,8 +282,6 @@ class SharesightCsvImporter:
             self._print_response_status(log_line_prefix, api_request_data, response)
         if (errors and 'instrument_id' in errors and errors['instrument_id'][0] == "^Instrument does not exist"):
             print(f"{log_line_prefix}: {response.status_code} (instrument missing handled) {response.url} ")
-            if (data_row['market'].lower()!='other'):
-                print(f"{log_line_prefix}: WARN Instrument data points to {data_row['market']} but needs to be 'other' for custom instrument")
             errors = self._create_missing_instrument(log_line_prefix, portfolio_id, data_row)
             if (errors == []):
                 response = self._api_client.try_create_trade(api_request_data)
@@ -283,14 +296,13 @@ class SharesightCsvImporter:
         response_data = response_json.get('trade')
         holding_id = response_data.get('holding_id') if response_data else None
         if (not holding_id and len(errors) == 0):
-            print(f"{log_line_prefix}: Couldn't find holding id but no error - {response_json}")
-        cash_account_id = cash_accounts[data_row.get("cash_account") or ("INCOME" if is_capital_call_or_return else "CAPITAL")]
+            print(f"{log_line_prefix}: {response.status_code} Couldn't find holding id but no error - {response_json}")
         self._process_cash(cash_account_id, log_line_prefix, data_row)
 
         if (data_row.get("accrued_income") and (data_row.get("transaction_type") == "SELL" or data_row.get("transaction_type") == "BUY")):
             accrued_income_row = data_row.copy()
             accrued_income_row.pop("accrued_income")
-            accrued_income_row.update({"amount_in_gbp": abs(float(data_row.get("accrued_income")))})
+            accrued_income_row.update({"amount": abs(float(data_row.get("accrued_income")))})
             accrued_income_row.update({"unique_identifier": f"{data_row.get('unique_identifier')}-accrued_income"})
             if (data_row.get("transaction_type") == "SELL"):
                 # sale price will exclude accrued income, so we add back as income
@@ -299,7 +311,7 @@ class SharesightCsvImporter:
                 # the bond purchase is dirty, so some of the payment is interest and some is principal
                 # so the original accrued income is a capital call
                 accrued_income_row.update({"transaction_type": "CAPITAL_CALL"})
-                self._process_trade(portfolio_id, country_code, cash_accounts, log_line_prefix, accrued_income_row, portfolio_payouts_lookup)
+                self._process_trade(portfolio_id, country_code, cash_account_id, log_line_prefix, accrued_income_row, portfolio_payouts_lookup)
         return holding_id
 
     def _process_payout(self, portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup):
@@ -309,10 +321,10 @@ class SharesightCsvImporter:
                 "portfolio_id": portfolio_id,
                 "holding_id": existing_holding_id,
                 "paid_on": data_row.get("transaction_date"),
-                "amount": data_row.get("amount_in_gbp"),
+                "amount": data_row.get("amount"),
                 "goes_ex_on": data_row.get("goes_ex_on"),
                 "currency_code": data_row.get("currency_code"),
-                "exchange_rate": data_row.get("exchange_rate_gbp") if country_code == "GB" and data_row.get("exchange_rate_gbp") else data_row.get("exchange_rate_aud") if country_code=="AU" and data_row.get("exchange_rate_aud") else "1",
+                "exchange_rate": data_row.get("exchange_rate_gbp") if country_code == "GB" else data_row.get("exchange_rate_aud") if country_code=="AU" else "??",
             }
 
             response = self._api_client.try_create_payout(api_request_data)
@@ -331,7 +343,7 @@ class SharesightCsvImporter:
         api_request_data = {
             "date_time": data_row.get("transaction_date"),
             "description": data_row.get("description"),
-            "amount": data_row.get("amount_in_gbp"),
+            "amount": data_row.get("amount"),
             "type_name": data_row.get("transaction_type"),
             "foreign_identifier": data_row.get("unique_identifier"),
         }
@@ -345,6 +357,8 @@ class SharesightCsvImporter:
                 errors = response_json.get('errors')
                 if not errors:
                     errors = [ response_json.get('error') ]
+                if not errors:
+                    errors = [ "Received unexpected response with status code " + str(response.status_code) + ": " + response.text ]
             else:
                 errors = []
         except json.decoder.JSONDecodeError as e:
@@ -353,14 +367,15 @@ class SharesightCsvImporter:
         return errors, response_json
     def _print_response_status(self, log_line_prefix, api_request_data, response):
         errors, response_json = self._get_errors(response)
+        response_url = response.url.replace("https://api.sharesight.com", "")
         if errors and len(errors) > 0:
             is_duplicate_tx = 'unique_identifier' in errors and errors['unique_identifier'][0] == "A trade with this unique_identifier already exists in the portfolio."
             is_duplicate_cash = 'foreign_identifier' in errors and errors['foreign_identifier'][0] == "has already been taken"
             if not is_duplicate_tx and not is_duplicate_cash:
-                print(f"{log_line_prefix}: {response.status_code} {response_json} {api_request_data}")
+                print(f"{log_line_prefix}: {response.status_code} {response_json} {api_request_data} {response_url}")
             else:
-                print(f"{log_line_prefix}: {response.status_code} Skipped (duplicate): {response_json} {api_request_data}")
+                print(f"{log_line_prefix}: {response.status_code} Skipped (duplicate): {response_json} {api_request_data} {response_url}")
             return errors
         else:
-            print(f"{log_line_prefix}: {response.status_code} Success {response.url}")
+            print(f"{log_line_prefix}: {response.status_code} Success {response_url}")
             return []

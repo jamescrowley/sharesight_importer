@@ -130,6 +130,28 @@ class SharesightApiClient:
             f'{self.API_V3_BASE_URL}custom_investments', 
             json=instrument_data
         )
+
+    def create_custom_investment_price(self, custom_investment_id, price_data):
+        return self._make_request_without_status_check('post', 
+            f'{self.API_V3_BASE_URL}custom_investment/{custom_investment_id}/prices.json', 
+            json=price_data
+        )
+
+    def delete_custom_investment_price(self, price_id):
+        return self._make_request('delete', 
+            f'{self.API_V3_BASE_URL}prices/{price_id}.json'
+        )
+    
+    def put_custom_investment_price(self, price_id, price_data):
+        return self._make_request_without_status_check('put', 
+            f'{self.API_V3_BASE_URL}prices/{price_id}.json', 
+            json=price_data
+        )
+    
+    def get_custom_investment_prices(self, custom_investment_id, start_date, end_date):
+        return self._make_request('get', 
+            f'{self.API_V3_BASE_URL}custom_investment/{custom_investment_id}/prices.json?start_date={start_date}&end_date={end_date}'
+        ).json()
     
     def try_create_holding_merge(self, portfolio_id, merge_data):
         return self._make_request_without_status_check('post', 

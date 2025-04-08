@@ -1,0 +1,25 @@
+{
+  "exchange_rates": {
+    "GBP/AUD": { "rate": 1.914648019271949, "on": "2023-10-03" },
+    "AUD/GBP": { "rate": 0.522289209261686, "on": "2023-10-03" },
+    "GBP/EUR": { "rate": 1.15373255556376, "on": "2023-10-03" },
+    "EUR/GBP": { "rate": 0.866752, "on": "2023-10-03" },
+    "GBP/USD": { "rate": 1.207803385512811, "on": "2023-10-03" },
+    "USD/GBP": { "rate": 0.827949326847944, "on": "2023-10-03" },
+    "AUD/EUR": { "rate": 0.602582064144861, "on": "2023-10-03" },
+    "EUR/AUD": { "rate": 1.659524999999999, "on": "2023-10-03" },
+    "AUD/USD": { "rate": 0.630822675163074, "on": "2023-10-03" },
+    "USD/AUD": { "rate": 1.585231538706959, "on": "2023-10-03" },
+    "EUR/USD": { "rate": 1.046866, "on": "2023-10-03" },
+    "USD/EUR": { "rate": 0.955232092741573, "on": "2023-10-03" }
+  },
+  "api_transaction": {
+    "id": 908581298,
+    "version": 3,
+    "action": "/api/v3.0-internal/exchange_rates.json",
+    "timestamp": "2025-04-08T04:02:26.000Z"
+  },
+  "links": {
+    "self": "https://portfolio.sharesight.com/api/v3.0-internal/exchange_rates.json?date=2023-10-03\u0026codes%5B%5D=GBP\u0026codes%5B%5D=AUD\u0026codes%5B%5D=EUR\u0026codes%5B%5D=USD\u0026show_all_crosses=false/api/v3/exchange_rates?codes%5B%5D=GBP\u0026codes%5B%5D=AUD\u0026codes%5B%5D=EUR\u0026codes%5B%5D=USD\u0026date=2023-10-03\u0026show_all_crosses=false"
+  }
+}

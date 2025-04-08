@@ -1,0 +1,25 @@
+{
+  "exchange_rates": {
+    "GBP/AUD": { "rate": 2.11920241, "on": "2025-04-08" },
+    "AUD/GBP": { "rate": 0.471875643063279, "on": "2025-04-08" },
+    "GBP/EUR": { "rate": 1.16552018, "on": "2025-04-08" },
+    "EUR/GBP": { "rate": 0.857986002438842, "on": "2025-04-08" },
+    "GBP/USD": { "rate": 1.27781572, "on": "2025-04-08" },
+    "USD/GBP": { "rate": 0.782585457627646, "on": "2025-04-08" },
+    "AUD/EUR": { "rate": 0.54998059, "on": "2025-04-08" },
+    "EUR/AUD": { "rate": 1.818245985735606, "on": "2025-04-08" },
+    "AUD/USD": { "rate": 0.60297012, "on": "2025-04-08" },
+    "USD/AUD": { "rate": 1.658456972959124, "on": "2025-04-08" },
+    "EUR/USD": { "rate": 1.096348, "on": "2025-04-08" },
+    "USD/EUR": { "rate": 0.912119144651151, "on": "2025-04-08" }
+  },
+  "api_transaction": {
+    "id": 908581047,
+    "version": 3,
+    "action": "/api/v3.0-internal/exchange_rates.json",
+    "timestamp": "2025-04-08T04:02:00.000Z"
+  },
+  "links": {
+    "self": "https://portfolio.sharesight.com/api/v3.0-internal/exchange_rates.json?date=2025-04-08\u0026codes[]=GBP\u0026codes[]=AUD\u0026codes[]=EUR\u0026codes[]=USD\u0026show_all_crosses=false/api/v3/exchange_rates?codes%5B%5D=GBP\u0026codes%5B%5D=AUD\u0026codes%5B%5D=EUR\u0026codes%5B%5D=USD\u0026date=2025-04-08\u0026show_all_crosses=false"
+  }
+}

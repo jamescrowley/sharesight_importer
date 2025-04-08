@@ -17,10 +17,12 @@ def main():
     parser.add_argument('-n', '--min_line', type=int, help='Line number to start at')
     parser.add_argument('-x', '--max_line', type=int, help='Line number to finish at')
     parser.add_argument('-v', '--verbose', type=bool, action=argparse.BooleanOptionalAction, help='Output curl requests')
+    parser.add_argument('-ob', '--opening_balance_on', type=lambda s: datetime.datetime.strptime(s, '%Y-%m-%d').date(), help='Generate opening balances on this date')
+    parser.add_argument('-obf', '--opening_balance_from', type=str, required=False, help='The portfolio to calculate opening balances from')
 
     args = parser.parse_args()
     print(f"{args}")
     api_client = SharesightApiClient(args.client_id, args.client_secret, args.verbose)
     csv_importer = SharesightCsvImporter(api_client)
-    csv_importer.import_file(args.file_name, args.portfolio_name, args.country_code, args.delete_existing, args.min_date, args.min_line, args.max_line, args.prices_file_name) 
+    csv_importer.import_file(args.file_name, args.portfolio_name, args.country_code, args.delete_existing, args.min_date, args.opening_balance_on, args.opening_balance_from, args.min_line, args.max_line, args.prices_file_name) 
 main()

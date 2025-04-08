@@ -1,3 +1,5 @@
+import json
+import os
 import time
 import curlify
 import requests
@@ -6,6 +8,8 @@ class SharesightApiClient:
     
     API_V2_BASE_URL = "https://api.sharesight.com/api/v2/"
     API_V3_BASE_URL = "https://api.sharesight.com/api/v3/"
+    API_V3_INTERNAL_BASE_URL = "https://api.sharesight.com/api/v3.0-internal/"
+
     _output_curl = False
     _access_token = None
 
@@ -120,6 +124,11 @@ class SharesightApiClient:
                 f"{self.API_V2_BASE_URL}cash_account_transactions/{transaction.get('id')}"
             )
     
+    def get_cash_account_transactions(self, cash_account_id, from_date, to_date):
+        return self._make_request('get', 
+            f"{self.API_V2_BASE_URL}cash_accounts/{cash_account_id}/cash_account_transactions.json?from={from_date}&to={to_date}"
+        ).json()
+    
     def get_custom_investments(self, portfolio_id):
         return self._make_request('get', 
             f"{self.API_V3_BASE_URL}custom_investments?portfolio_id={portfolio_id}"
@@ -152,6 +161,22 @@ class SharesightApiClient:
         return self._make_request('get', 
             f'{self.API_V3_BASE_URL}custom_investment/{custom_investment_id}/prices.json?start_date={start_date}&end_date={end_date}'
         ).json()
+    
+    def get_valuation_on(self, portfolio_id, date):
+        return self._make_request('get', 
+            f'{self.API_V2_BASE_URL}portfolios/{portfolio_id}/valuation.json?balance_date={date}'
+        ).json()
+    
+    def get_internal_exchange_rates(self, date):
+        #not accessible via API, but we can manually load them when signed in
+        #https://portfolio.sharesight.com/api/v3.0-internal/exchange_rates.json?date=2025-04-08&codes[]=GBP&codes[]=AUD&codes[]=EUR&codes[]=JPY&codes[]=USD&codes[]=KYD&show_all_crosses=false
+        # if file exists then load from file
+        if os.path.exists(f"exchange-rates-{date}.json"):
+            with open(f"exchange-rates-{date}.json", "r") as f:
+                return json.load(f)
+        else:
+            # throw 404
+            raise Exception(f"Exchange rates for {date} not found")
     
     def try_create_holding_merge(self, portfolio_id, merge_data):
         return self._make_request_without_status_check('post', 

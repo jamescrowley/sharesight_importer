@@ -32,6 +32,9 @@ class SharesightCsvImporter:
         "FEE": "cash",
         "FEE_REIMBURSEMENT": "cash"
     }
+    # cancel is not strictly a non-cash transaction, we are just using it for transfer
+    # of holdings across portfolios
+    NON_CASH_TX_TYPES = ["OPENING_BALANCE", "CANCEL", "MERGE_BUY", "MERGE_CANCEL", "CONSOLD", "BONUS", "SPLIT"]
     CUSTOM_INSTRUMENT_SUFFIX = "(AUTO)"
 
     def __init__(self, api_client: SharesightApiClient):
@@ -191,7 +194,7 @@ class SharesightCsvImporter:
                             print(f"{log_line_prefix}\tLooking up holding id for {holding_id_lookup_key}")
                             existing_holding_id = portfolio_holdings_lookup.get(holding_id_lookup_key)
                             if (existing_holding_id == None):
-                                print(f"{log_line_prefix}: Missing holding id for {holding_id_lookup_key}")
+                                print(f"{log_line_prefix}\tMissing holding id for {holding_id_lookup_key}")
                     case 'payout':
                         # cannot rely on using symbol/market directly, as this doesn't work for custom instruments
                         existing_holding_id = portfolio_holdings_lookup.get(holding_id_lookup_key)
@@ -211,7 +214,7 @@ class SharesightCsvImporter:
                     case 'cash':
                         self._process_cash(cash_account_id, log_line_prefix, data_row)
                     case _:
-                        print(f"{log_line_prefix}: ERROR Unable to map {data_row.get('transaction_type')} to an API endpoint", file=sys.stderr)
+                        print(f"{log_line_prefix}\tERROR Unable to map {data_row.get('transaction_type')} to an API endpoint", file=sys.stderr)
                         return None
         print(f"Syncing cash accounts")
         for cash_account in set(cash_accounts.values()):
@@ -221,6 +224,7 @@ class SharesightCsvImporter:
     def _process_prices(self, prices_file_path: TextIO, portfolio_id: str, country_code: str):
         print(f"Syncing custom instruments prices")
         portfolio_custom_investments = self._api_client.get_custom_investments(portfolio_id)['custom_investments']
+        print(f"portfolio_custom_investments: {portfolio_custom_investments}")
         portfolio_custom_investments_lookup = {self._remove_portfolio_qualifier_from_symbol(c['code'], portfolio_id): c['id'] for c in portfolio_custom_investments}
         with open(prices_file_path, mode='r', encoding='utf-8-sig') as file:
             reader = csv.DictReader(file)
@@ -333,14 +337,14 @@ class SharesightCsvImporter:
         response = self._api_client.try_create_custom_investment(custom_investment_data)
         errors, response_json = self._get_errors(response)
         if (response_json.get("currency_code") != data_row.get("instrument_currency")):
-            print(f"{log_line_prefix}: WARN Sharesight has set {custom_investment_data['code']} currency code to {response_json.get('currency_code')} based on domicile, but instrument currency is set to {data_row.get('instrument_currency')}")
+            print(f"{log_line_prefix}\tWARN Sharesight has set {custom_investment_data['code']} currency code to {response_json.get('currency_code')} based on domicile, but instrument currency is set to {data_row.get('instrument_currency')}")
         self._print_response_status(log_line_prefix, custom_investment_data, response)
         return errors
 
     def _process_trade(self, portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, portfolio_payouts_lookup):
         is_capital_call_or_return = data_row.get("transaction_type") == "CAPITAL_CALL" or data_row.get("transaction_type") == "CAPITAL_RETURN"
         if (float(data_row.get("quantity")) < 0):
-            print(f"{log_line_prefix}: WARN Shorts are not supported by Sharesight. Quantity is negative: {data_row.get('quantity')}")
+            print(f"{log_line_prefix}\tWARN Shorts are not supported by Sharesight. Quantity is negative: {data_row.get('quantity')}")
         api_request_data = {
             "unique_identifier": data_row.get("unique_identifier"),
             "transaction_type": data_row.get("transaction_type"),
@@ -365,17 +369,17 @@ class SharesightCsvImporter:
         response = self._api_client.try_create_trade(api_request_data)
         errors,response_json  = self._get_errors(response)
         # workaround to "We do not have a price on 18 Sep 2019" error
-        if (response.status_code != 200 and data_row.get("transaction_type") == "OPENING_BALANCE" and errors and 'market_price' in errors and errors['market_price'][0] == "^We do not have a price on 18 Sep 2019"):
-            print(f"{log_line_prefix}: {response.status_code} (no price handled) {response.url} Falling back to BUY transaction type, this will need modifying in the UI")
-            api_request_data['transaction_type'] = "BUY"
-            response = self._api_client.try_create_trade(api_request_data)
-            errors,response_json = self._get_errors(response)
+        # if (response.status_code != 200 and data_row.get("transaction_type") == "OPENING_BALANCE" and errors and 'market_price' in errors and errors['market_price'][0] == "^We do not have a price on 18 Sep 2019"):
+        #     print(f"{log_line_prefix}\t{response.status_code} (no price handled) {response.url} Falling back to BUY transaction type, this will need modifying in the UI")
+        #     api_request_data['transaction_type'] = "BUY"
+        #     response = self._api_client.try_create_trade(api_request_data)
+        #     errors,response_json = self._get_errors(response)
         self._print_response_status(log_line_prefix, api_request_data, response)
         
         response_data = response_json.get('trade')
         holding_id = response_data.get('holding_id') if response_data else None
         if (not holding_id and len(errors) == 0):
-            print(f"{log_line_prefix}: {response.status_code} Couldn't find holding id but no error - {response_json}")
+            print(f"{log_line_prefix}\t{response.status_code} Couldn't find holding id but no error - {response_json}")
         self._process_cash(cash_account_id, log_line_prefix, data_row)
 
         if (data_row.get("accrued_income") and (data_row.get("transaction_type") == "SELL" or data_row.get("transaction_type") == "BUY")):
@@ -420,9 +424,12 @@ class SharesightCsvImporter:
         self._process_cash(cash_account_id, log_line_prefix, data_row)
     
     def _process_cash(self, cash_account_id, log_line_prefix, data_row):
-        is_transfer = data_row.get("transaction_type") == "OPENING_BALANCE" or data_row.get("transaction_type") == "CANCEL"
-        if (is_transfer):
-            print(f"{log_line_prefix}: Skipping cash transaction as it is a transfer")
+        is_non_cash_tx = data_row.get("transaction_type") in self.NON_CASH_TX_TYPES
+        if (is_non_cash_tx):
+            if (float(data_row.get("amount")) != 0):
+                print(f"{log_line_prefix}\tWARN Non-cash transaction with amount: {data_row.get('amount')}")
+            else:
+                print(f"{log_line_prefix}\tINFO Non-cash transaction with amount 0")
             return
         api_request_data = {
             "date_time": data_row.get("transaction_date"),

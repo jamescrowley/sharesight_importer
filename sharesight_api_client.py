@@ -36,12 +36,21 @@ class SharesightApiClient:
             "Authorization": "Bearer " + self._access_token,
             "Content-Type": "application/json"
         } if self._access_token else {}
-        response = requests.request(method, url, json=json, headers = headers or default_headers)
-        if (response.status_code == 504 or response.status_code == 502):
-            # gateway timeout, wait and then retry
-            print(f"Gateway timeout, waiting and retrying: {url}")
-            time.sleep(5)
+        
+        max_retries = 3
+        retry_delay = 5
+        
+        for attempt in range(max_retries):
             response = requests.request(method, url, json=json, headers = headers or default_headers)
+            
+            if response.status_code not in [502, 504]: # gateway timeout or bad gateway
+                break
+                
+            if attempt < max_retries - 1:
+                print(f"Gateway timeout (attempt {attempt + 1}/{max_retries}), waiting {retry_delay}s before retrying: {url}")
+                time.sleep(retry_delay)
+                retry_delay *= 2
+        
         if (self._output_curl):
             print(curlify.to_curl(response.request))
 
@@ -101,19 +110,24 @@ class SharesightApiClient:
             f"{self.API_V2_BASE_URL}portfolios/{portfolio_id}/payouts.json"
         ).json()
     
-    def delete_all_trades(self, portfolio_id):
-        trades = self._make_request('get', 
-            f"{self.API_V2_BASE_URL}portfolios/{portfolio_id}/trades.json"
+    def delete_all_holdings(self, portfolio_id):
+        holdings = self._make_request('get', 
+            f"{self.API_V3_BASE_URL}portfolios/{portfolio_id}/holdings"
         ).json()
-        for trade in trades.get('trades', []):
+        for holding in holdings.get('holdings', []):
             self._make_request('delete', 
-                f"{self.API_V2_BASE_URL}trades/{trade.get('id')}"
+                f"{self.API_V3_BASE_URL}holdings/{holding.get('id')}"
             )
-    
     def delete_all_cash_account_transactions_in_portfolio(self, portfolio_id):
         cash_accounts = self.get_cash_accounts(portfolio_id)
         for cash_account in cash_accounts.get('cash_accounts', []):
             self.delete_all_cash_account_transactions(cash_account.get('id'))
+            self.delete_cash_account(cash_account.get('id'))
+
+    def delete_cash_account(self, cash_account_id):
+        return self._make_request('delete', 
+            f"{self.API_V2_BASE_URL}cash_accounts/{cash_account_id}"
+        )
 
     def delete_all_cash_account_transactions(self, cash_account_id):
         transactions = self._make_request('get', 

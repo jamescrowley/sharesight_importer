@@ -49,6 +49,10 @@ class SharesightCsvImporter:
     def _remove_portfolio_qualifier_from_symbol(self, symbol: str, portfolio_id: str):
         return symbol[:-len(f"-{portfolio_id}")] if symbol.endswith(f"-{portfolio_id}") else symbol
 
+    # sharesight has a bug which means merge_cancel and merge_buy do not work
+    # if there are custom instruments with the same identifier in different portfolios
+    # even if they are scoped to different portfolios. it also doesn't work for ones scoped globally.
+    # so we ensure these have a globally unique identifier by adding the portfolio id to the end of the symbol
     def _get_symbol_key_with_portfolio_qualifier_for_custom_instruments(self, data_row, portfolio_id: str):
         return data_row.get("symbol") + f"-{portfolio_id}" if data_row.get('market','').lower()=='other' else data_row.get("symbol")
 
@@ -182,8 +186,8 @@ class SharesightCsvImporter:
                 api_endpoint_type = self.TRANSACTION_TYPE_TO_API_ENDPOINT.get(data_row.get('transaction_type'))
                 data_row.update({"symbol": self._get_symbol_key_with_portfolio_qualifier_for_custom_instruments(data_row, portfolio_id)})
                 holding_id_lookup_key = self.get_portfolio_holdings_lookup_key(portfolio_id, data_row.get("symbol"), data_row.get("market"))
-                cash_account_id = cash_accounts[self._get_cash_account_lookup_key(data_row.get("amount_currency"), data_row.get("cash_account"))]
-
+                cash_account_name = self._get_cash_account_lookup_key(data_row.get("amount_currency"), data_row.get("cash_account"))
+                cash_account_id = cash_accounts.get(cash_account_name)
                 match api_endpoint_type:
                     case 'trade':
                         holding_id = self._process_trade(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, portfolio_payouts_lookup)
@@ -278,26 +282,30 @@ class SharesightCsvImporter:
             }
         print(f"Creating portfolio {portfolio_data}")
         portfolio_id = self._api_client.create_portfolio(portfolio_data).get('id')
-        cash_accounts = {}
+        cash_accounts = self._create_cash_accounts(portfolio_id, cash_accounts_in_file)
+        return portfolio_id,cash_accounts
 
+    def _create_cash_accounts(self, portfolio_id, cash_accounts_in_file):
+        cash_accounts = {}
         for (cash_account_currency,cash_account_name) in cash_accounts_in_file:
             cash_account_full_name = f"{cash_account_name or 'Account'} ({cash_account_currency})"
             cash_account_id = self._api_client.create_cash_account(portfolio_id, {"name": cash_account_full_name, "currency": cash_account_currency}).get('cash_account').get('id')
             cash_accounts[self._get_cash_account_lookup_key(cash_account_currency, cash_account_name)] = cash_account_id
             print(f"Created cash account {cash_account_full_name} with id {cash_account_id}")
+        return cash_accounts
         
-        return portfolio_id,cash_accounts
 
     def _get_or_create_portfolio(self, portfolio_name, country_code, cash_accounts_in_file, delete_existing):
         portfolio_id,cash_accounts,_ = self._get_portfolio_by_name(portfolio_name)
         if (delete_existing):
             if (portfolio_id):
-                print(f"Removing existing portfolio {portfolio_id}")
-                self._api_client.delete_portfolio(portfolio_id)
-                # print(f"Removing existing trades and cash account transactions")
-                # self._api_client.delete_all_cash_account_transactions_in_portfolio(portfolio_id)
-                # self._api_client.delete_all_trades(portfolio_id)
-                portfolio_id, cash_accounts = None, {}
+                # print(f"Removing existing portfolio {portfolio_id}")
+                # self._api_client.delete_portfolio(portfolio_id)
+                # portfolio_id, cash_accounts = None, {}
+                print(f"Removing existing trades and cash account transactions")
+                self._api_client.delete_all_cash_account_transactions_in_portfolio(portfolio_id)
+                self._api_client.delete_all_holdings(portfolio_id)
+                cash_accounts = self._create_cash_accounts(portfolio_id, cash_accounts_in_file)
         if (portfolio_id == None):
             portfolio_id, cash_accounts = self._create_portfolio_and_cash_accounts(portfolio_name, country_code, cash_accounts_in_file)
         return portfolio_id,cash_accounts
@@ -426,11 +434,12 @@ class SharesightCsvImporter:
     def _process_cash(self, cash_account_id, log_line_prefix, data_row):
         is_non_cash_tx = data_row.get("transaction_type") in self.NON_CASH_TX_TYPES
         if (is_non_cash_tx):
-            if (float(data_row.get("amount")) != 0):
+            if (float(data_row.get("amount")) != 0 and data_row.get("transaction_type") != "OPENING_BALANCE"):
                 print(f"{log_line_prefix}\tWARN Non-cash transaction with amount: {data_row.get('amount')}")
-            else:
-                print(f"{log_line_prefix}\tINFO Non-cash transaction with amount 0")
             return
+        if (cash_account_id == None):
+            print(f"{log_line_prefix}\tERROR Unable to find cash account {data_row.get("amount_currency")} {data_row.get('cash_account')}", file=sys.stderr)
+        
         api_request_data = {
             "date_time": data_row.get("transaction_date"),
             "description": data_row.get("description"),

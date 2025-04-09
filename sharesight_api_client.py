@@ -110,33 +110,39 @@ class SharesightApiClient:
             f"{self.API_V2_BASE_URL}portfolios/{portfolio_id}/payouts.json"
         ).json()
     
+    def get_holding(self, holding_id):
+        return self._make_request('get', 
+            f"{self.API_V3_BASE_URL}holdings/{holding_id}"
+        ).json()
+    
     def delete_all_holdings(self, portfolio_id):
+        print(f"Deleting holdings for portfolio {portfolio_id}")
         holdings = self._make_request('get', 
             f"{self.API_V3_BASE_URL}portfolios/{portfolio_id}/holdings"
         ).json()
         for holding in holdings.get('holdings', []):
-            self._make_request('delete', 
-                f"{self.API_V3_BASE_URL}holdings/{holding.get('id')}"
-            )
+            print(f"Deleting holding {holding.get('id')}")
+            # retry if 400 status code, seems to trigger intermittently
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    self._make_request('delete', 
+                        f"{self.API_V3_BASE_URL}holdings/{holding.get('id')}"
+                    )
+                    break
+                except Exception as e:
+                    print(f"Error deleting holding {holding.get('id')}: {e}")
+
     def delete_all_cash_account_transactions_in_portfolio(self, portfolio_id):
         cash_accounts = self.get_cash_accounts(portfolio_id)
         for cash_account in cash_accounts.get('cash_accounts', []):
-            self.delete_all_cash_account_transactions(cash_account.get('id'))
+            print(f"Deleting cash account {cash_account.get('id')}")
             self.delete_cash_account(cash_account.get('id'))
 
     def delete_cash_account(self, cash_account_id):
         return self._make_request('delete', 
             f"{self.API_V2_BASE_URL}cash_accounts/{cash_account_id}"
         )
-
-    def delete_all_cash_account_transactions(self, cash_account_id):
-        transactions = self._make_request('get', 
-            f"{self.API_V2_BASE_URL}cash_accounts/{cash_account_id}/cash_account_transactions.json"
-        ).json()
-        for transaction in transactions.get('cash_account_transactions', []):
-            self._make_request('delete', 
-                f"{self.API_V2_BASE_URL}cash_account_transactions/{transaction.get('id')}"
-            )
     
     def get_cash_account_transactions(self, cash_account_id, from_date, to_date):
         return self._make_request('get', 
@@ -151,6 +157,12 @@ class SharesightApiClient:
     def try_create_custom_investment(self, instrument_data):
         return self._make_request_without_status_check('post', 
             f'{self.API_V3_BASE_URL}custom_investments', 
+            json=instrument_data
+        )
+    
+    def try_update_custom_investment(self, custom_investment_id, instrument_data):
+        return self._make_request_without_status_check('put', 
+            f'{self.API_V3_BASE_URL}custom_investments/{custom_investment_id}', 
             json=instrument_data
         )
 

@@ -58,6 +58,8 @@ class SharesightApiClient:
 
     def _make_request(self, method, url, headers=None, json=None):
         response = self._make_request_without_status_check(method, url, headers=headers, json=json)
+        if (400 <= response.status_code < 500 or 500 <= response.status_code < 600):
+            print(response.json())
         response.raise_for_status()
         return response
 
@@ -154,34 +156,39 @@ class SharesightApiClient:
             f"{self.API_V3_BASE_URL}custom_investments?portfolio_id={portfolio_id}"
         ).json()
     
-    def try_create_custom_investment(self, instrument_data):
-        return self._make_request_without_status_check('post', 
+    def create_custom_investment(self, instrument_data):
+        return self._make_request('post', 
             f'{self.API_V3_BASE_URL}custom_investments', 
             json=instrument_data
-        )
+        ).json()
     
-    def try_update_custom_investment(self, custom_investment_id, instrument_data):
-        return self._make_request_without_status_check('put', 
+    def update_custom_investment(self, custom_investment_id, instrument_data):
+        return self._make_request('put', 
             f'{self.API_V3_BASE_URL}custom_investments/{custom_investment_id}', 
             json=instrument_data
-        )
+        ).json()
 
     def create_custom_investment_price(self, custom_investment_id, price_data):
-        return self._make_request_without_status_check('post', 
+        return self._make_request('post', 
             f'{self.API_V3_BASE_URL}custom_investment/{custom_investment_id}/prices.json', 
             json=price_data
-        )
+        ).json()
+
+    def delete_custom_investment(self, custom_investment_id):
+        return self._make_request('delete', 
+            f'{self.API_V3_BASE_URL}custom_investments/{custom_investment_id}'
+        ).json()
 
     def delete_custom_investment_price(self, price_id):
         return self._make_request('delete', 
             f'{self.API_V3_BASE_URL}prices/{price_id}.json'
-        )
+        ).json()
     
     def put_custom_investment_price(self, price_id, price_data):
-        return self._make_request_without_status_check('put', 
+        return self._make_request('put', 
             f'{self.API_V3_BASE_URL}prices/{price_id}.json', 
             json=price_data
-        )
+        ).json()
     
     def get_custom_investment_prices(self, custom_investment_id, start_date, end_date):
         return self._make_request('get', 
@@ -197,8 +204,8 @@ class SharesightApiClient:
         #not accessible via API, but we can manually load them when signed in
         #https://portfolio.sharesight.com/api/v3.0-internal/exchange_rates.json?date=2025-04-08&codes[]=GBP&codes[]=AUD&codes[]=EUR&codes[]=JPY&codes[]=USD&codes[]=KYD&show_all_crosses=false
         # if file exists then load from file
-        if os.path.exists(f"exchange-rates-{date}.json"):
-            with open(f"exchange-rates-{date}.json", "r") as f:
+        if os.path.exists(f"../sharesight_importer_data/exchange-rates-{date}.json"):
+            with open(f"../sharesight_importer_data/exchange-rates-{date}.json", "r") as f:
                 return json.load(f)
         else:
             # throw 404
@@ -210,7 +217,7 @@ class SharesightApiClient:
             json=merge_data
         )
 
-    def try_delete_custom_instruments(self, portfolio_id, suffix):
+    def delete_custom_instruments(self, portfolio_id, suffix):
         custom_investments = self._make_request('get', 
             f'{self.API_V3_BASE_URL}custom_investments?portfolio_id={portfolio_id}')
         for custom_investment in custom_investments.json().get('custom_investments', []):

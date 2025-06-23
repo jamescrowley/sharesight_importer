@@ -208,18 +208,29 @@ class SharesightCsvImporter:
                         # cannot rely on using symbol/market directly, as this doesn't work for custom instruments
                         existing_holding_id = portfolio_holdings_lookup.get(holding_id_lookup_key)
                         if (existing_holding_id == None):
-                            print(f'{log_line_prefix}\tERROR Unable to find holding id matching {holding_id_lookup_key} - {data_row.get("symbol")}, {data_row.get("market")}, skipping payout', file=sys.stderr)
+                            print(f'{log_line_prefix}\tERROR Unable to find holding id matching {holding_id_lookup_key} - {data_row.get("symbol")}, {data_row.get("market")}', file=sys.stderr)
+                            return None
                         else:
                             self._process_payout(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup)
                     case 'merge':
-                        existing_holding_id = portfolio_holdings_lookup.get(holding_id_lookup_key)
-                        print(f"{log_line_prefix}\texisting_holding_id: {existing_holding_id}")
                         next_data_row = reader.__next__()
                         next_data_row.update({"symbol": self._get_symbol_key_with_portfolio_qualifier_for_custom_instruments(next_data_row, portfolio_id)})
-                        if (next_data_row.get("transaction_type") != "MERGE_BUY"):
-                            print(f"{log_line_prefix}\tERROR Expected MERGE_BUY but got {next_data_row.get('transaction_type')}", file=sys.stderr)
+                        if (next_data_row.get("transaction_type") != "MERGE_BUY" and next_data_row.get("transaction_type") != "MERGE_CANCEL"):
+                            print(f"{log_line_prefix}\tERROR Expected MERGE_BUY or MERGE_CANCEL to follow but got {next_data_row.get('transaction_type')}", file=sys.stderr)
+                            reader.backup(1)  # put the row back for next iteration
                             return None
-                        self._process_merge(portfolio_id, existing_holding_id, log_line_prefix, next_data_row)
+                        if (next_data_row.get("transaction_type") == "MERGE_CANCEL"):
+                            cancel_data_row = next_data_row
+                            buy_data_row = data_row
+                        else:
+                            cancel_data_row = data_row
+                            buy_data_row = next_data_row
+                        cancel_holding_id_lookup_key = self.get_portfolio_holdings_lookup_key(portfolio_id, cancel_data_row.get("symbol"), cancel_data_row.get("market"))
+                        existing_holding_id = portfolio_holdings_lookup.get(cancel_holding_id_lookup_key)
+                        if (existing_holding_id == None):
+                            print(f"{log_line_prefix}\tERROR Unable to find holding id for cancellation matching {cancel_holding_id_lookup_key} - {cancel_data_row.get('symbol')}, {cancel_data_row.get('market')}. Known holdings {portfolio_holdings_lookup}", file=sys.stderr)
+                            return None
+                        self._process_merge(portfolio_id, existing_holding_id, log_line_prefix, buy_data_row)
                     case 'cash':
                         self._process_cash(cash_account_id, log_line_prefix, data_row)
                     case _:
@@ -403,18 +414,32 @@ class SharesightCsvImporter:
                 print(f"{log_line_prefix}\tERROR {data_row.get("symbol")} has instrument currency code {data_row.get('instrument_currency')} but Sharesight has set it to {holding_currency_code}")
         self._process_cash(cash_account_id, log_line_prefix, data_row)
 
-        if (data_row.get("accrued_income") and (data_row.get("transaction_type") == "SELL" or data_row.get("transaction_type") == "BUY")):
+        if (float(data_row.get("accrued_income",0)) != 0 and (data_row.get("transaction_type") == "SELL" or data_row.get("transaction_type") == "BUY")):
             accrued_income_row = data_row.copy()
             accrued_income_row.pop("accrued_income")
-            accrued_income_row.update({"amount": abs(float(data_row.get("accrued_income")))})
-            accrued_income_row.update({"unique_identifier": f"{data_row.get('unique_identifier')}-accrued_income"})
+            accrued_income_row.pop("accrued_income_in_instrument_currency")
+            accrued_income_row.pop("accrued_income_in_gbp")
+            accrued_income_row.pop("accrued_income_in_aud")
+            accrued_income_row.update({
+                "unique_identifier": f"{data_row.get('unique_identifier')}-accrued_income",
+                "amount": data_row.get("accrued_income"),
+                "amount_in_instrument_currency": data_row.get("accrued_income_in_instrument_currency"),
+                "amount_in_gbp": data_row.get("accrued_income_in_gbp"),
+                "amount_in_aud": data_row.get("accrued_income_in_aud"),
+            })
             if (data_row.get("transaction_type") == "SELL"):
                 # sale price will exclude accrued income, so we add back as income
+                accrued_income_row.update({
+                    # calculate day before transaction_date as sharesight won't allow distribution on the day of sale
+                    "goes_ex_on": (datetime.datetime.strptime(data_row.get("transaction_date"), "%Y-%m-%d") - datetime.timedelta(days=1)).strftime("%Y-%m-%d"),
+                })
                 self._process_payout(portfolio_id, country_code, cash_account_id, log_line_prefix, accrued_income_row, holding_id, portfolio_payouts_lookup)
             elif (data_row.get("transaction_type") == "BUY"):
                 # the bond purchase is dirty, so some of the payment is interest and some is principal
                 # so the original accrued income is a capital call
-                accrued_income_row.update({"transaction_type": "CAPITAL_CALL"})
+                accrued_income_row.update({
+                    "transaction_type": "CAPITAL_CALL",
+                })
                 self._process_trade(portfolio_id, country_code, cash_account_id, log_line_prefix, accrued_income_row, portfolio_payouts_lookup)
         return holding_id
 

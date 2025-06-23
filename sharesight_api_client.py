@@ -227,6 +227,11 @@ class SharesightApiClient:
                     f"{self.API_V3_BASE_URL}custom_investments/{custom_investment['id']}"
                 )
     
+    def get_coupon_codes(self):
+        return self._make_request('get',
+            f'{self.API_V3_BASE_URL}coupon_code'
+        ).json()
+
     def try_create_trade(self, trade_data):
         return self._make_request_without_status_check('post', 
             f'{self.API_V2_BASE_URL}trades.json', 

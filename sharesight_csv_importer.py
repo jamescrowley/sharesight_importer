@@ -480,7 +480,7 @@ class SharesightCsvImporter:
         api_request_data = {
             "date_time": data_row.get("transaction_date"),
             "description": data_row.get("unique_identifier") + " " + data_row.get("description"),
-            "amount": data_row.get("amount"),
+            "amount": float(data_row.get("amount")) - float(data_row.get("accrued_income", 0)),
             "type_name": data_row.get("transaction_type"),
             "foreign_identifier": data_row.get("unique_identifier"),
         }

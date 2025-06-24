@@ -87,8 +87,9 @@ class SharesightCsvImporter:
             ]
 
     def _generate_opening_balances_rows(self, portfolio_id: str, portfolio_currency_code, valuation_date: datetime.date):
-        valuation = self._api_client.get_valuation_on(portfolio_id, valuation_date)
-        exchange_rates = self._api_client.get_internal_exchange_rates(valuation_date).get("exchange_rates")
+        last_balance_date = (valuation_date - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        valuation = self._api_client.get_valuation_on(portfolio_id, last_balance_date)
+        exchange_rates = self._api_client.get_internal_exchange_rates(last_balance_date).get("exchange_rates")
         print(f"Exchange rates: {exchange_rates}")
         gbp_to_aud = exchange_rates.get("GBP/AUD").get("rate")
         aud_to_gbp = exchange_rates.get("AUD/GBP").get("rate")

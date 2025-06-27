@@ -200,17 +200,6 @@ class SharesightApiClient:
             f'{self.API_V2_BASE_URL}portfolios/{portfolio_id}/valuation.json?balance_date={date}'
         ).json()
     
-    def get_internal_exchange_rates(self, date):
-        #not accessible via API, but we can manually load them when signed in
-        #https://portfolio.sharesight.com/api/v3.0-internal/exchange_rates.json?date=2025-04-08&codes[]=GBP&codes[]=AUD&codes[]=EUR&codes[]=JPY&codes[]=USD&codes[]=KYD&show_all_crosses=false
-        # if file exists then load from file
-        if os.path.exists(f"../sharesight_importer_data/exchange-rates-{date}.json"):
-            with open(f"../sharesight_importer_data/exchange-rates-{date}.json", "r") as f:
-                return json.load(f)
-        else:
-            # throw 404
-            raise Exception(f"Exchange rates for {date} not found")
-    
     def try_create_holding_merge(self, portfolio_id, merge_data):
         return self._make_request_without_status_check('post', 
             f'{self.API_V2_BASE_URL}portfolios/{portfolio_id}/holding_merges.json', 

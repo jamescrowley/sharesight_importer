@@ -2,6 +2,7 @@ import csv
 import datetime
 from itertools import chain
 import json
+import os
 import sys
 from typing import TextIO
 from sharesight_api_client import SharesightApiClient
@@ -86,28 +87,37 @@ class SharesightCsvImporter:
                 }
             ]
 
-    def _generate_opening_balances_rows(self, portfolio_id: str, portfolio_currency_code, valuation_date: datetime.date):
+    def get_internal_exchange_rates(self, exchange_rates_file_path, date):
+        if os.path.exists(exchange_rates_file_path):
+            with open(exchange_rates_file_path, "r") as f:
+                reader = csv.DictReader(f)
+                exchange_rates = {row['date']: row for row in reader}
+                if date in exchange_rates:
+                    return exchange_rates[date]
+        else:
+            raise Exception(f"Exchange rates for {date} not found")
+    
+    def _generate_opening_balances_rows(self, portfolio_id: str, portfolio_currency_code, valuation_date: datetime.date, exchange_rates_file_path: TextIO | None):
         last_balance_date = (valuation_date - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         valuation = self._api_client.get_valuation_on(portfolio_id, last_balance_date)
-        exchange_rates = self._api_client.get_internal_exchange_rates(last_balance_date).get("exchange_rates")
-        print(f"Exchange rates: {exchange_rates}")
-        gbp_to_aud = exchange_rates.get("GBP/AUD").get("rate")
-        aud_to_gbp = exchange_rates.get("AUD/GBP").get("rate")
+        exchange_rates = self.get_internal_exchange_rates(exchange_rates_file_path, last_balance_date)
         for holding in valuation.get("holdings"):
-            holding_currency = self._get_currency_for_holding(holding.get("id"))
+            instrument_currency = self._get_currency_for_holding(holding.get("id"))
+            portfolio_currency_to_instrument_currency_exchange_rate = exchange_rates.get(f"{portfolio_currency_code}/{instrument_currency}")
+            price_in_instrument_currency = holding.get("value") * portfolio_currency_to_instrument_currency_exchange_rate
             yield {
+                "skip_cash_account_transaction": True,
                 "unique_identifier": f"GENERATED-{holding.get('symbol')}",
-                "transaction_type": "OPENING_BALANCE",
+                "transaction_type": "BUY",
                 "transaction_date": valuation.get("balance_date"),
                 "symbol": self._remove_portfolio_qualifier_from_symbol(holding.get("symbol"), portfolio_id),
-                "instrument_currency": holding_currency,
+                "instrument_currency": instrument_currency,
                 "market": holding.get("market"),
                 "quantity": holding.get("quantity"),
-                "amount": holding.get("value"),
-                "amount_currency": portfolio_currency_code,
-                "amount_in_gbp": holding.get("value") if portfolio_currency_code == "GBP" else holding.get("value") * aud_to_gbp,
-                "amount_in_aud": holding.get("value") if portfolio_currency_code == "AUD" else holding.get("value") * gbp_to_aud,
-                "description": "Opening Balance"
+                "brokerage_in_gbp": 0,
+                "brokerage_in_aud": 0,
+                "price": price_in_instrument_currency,
+                "description": "Deemed aquisition at residency commencement"
             }
         # cash account valuations are not reliable from the valuation api endpoint, as they
         # convert from the account currency to the portfolio currency, and back again
@@ -136,7 +146,7 @@ class SharesightCsvImporter:
                 "description": "Opening Balance"
             }
     
-    def import_file(self, file_path: TextIO, portfolio_name: str, country_code: str, delete_existing: bool, min_date: datetime.date, opening_balance_on: datetime.date | None, opening_balance_from: str | None, min_line: int, max_line: int, prices_file_path: TextIO):
+    def import_file(self, file_path: TextIO, portfolio_name: str, country_code: str, delete_existing: bool, min_date: datetime.date, opening_balance_on: datetime.date | None, opening_balance_from: str | None, min_line: int, max_line: int, prices_file_path: TextIO, exchange_rates_file_path: TextIO | None):
         opening_balances = []
         if ((min_date or min_line or max_line) and delete_existing):
             print(f"You probably didn't want to delete existing trades while restarting/running a specific line of the file. Exiting.", file=sys.stderr)
@@ -144,7 +154,7 @@ class SharesightCsvImporter:
         if opening_balance_on and opening_balance_from:
             portfolio_id,_,portfolio_currency_code = self._get_portfolio_by_name(opening_balance_from)
             print(f"Generating opening balances on {opening_balance_on} from {opening_balance_from}")
-            opening_balances = list(self._generate_opening_balances_rows(portfolio_id, portfolio_currency_code, opening_balance_on))
+            opening_balances = list(self._generate_opening_balances_rows(portfolio_id, portfolio_currency_code, opening_balance_on, exchange_rates_file_path))
             # TODO: if custom instrument prices are not synced between the two portfolios, the opening balances will be incorrect
             # not sure how we check this yet
             print('    ' + '\n    '.join(f"{p}" for p in opening_balances))
@@ -477,7 +487,9 @@ class SharesightCsvImporter:
             return
         if (cash_account_id == None):
             print(f"{log_line_prefix}\tERROR Unable to find cash account {data_row.get("amount_currency")} {data_row.get('cash_account')}", file=sys.stderr)
-        
+        if (data_row.get("skip_cash_account_transaction")):
+            print(f"{log_line_prefix}\tWARN Skipping cash account transaction for {data_row.get('unique_identifier')}", file=sys.stderr)
+            return
         api_request_data = {
             "date_time": data_row.get("transaction_date"),
             "description": data_row.get("unique_identifier") + " " + data_row.get("description"),

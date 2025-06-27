@@ -20,7 +20,7 @@ def extract_rates_to_csv():
             all_pairs.add(pair)
             all_rates[date_str][pair] = rate_info['rate']
     
-    with open('exchange_rates.csv', 'w', newline='') as f:
+    with open('exchange_rates_ss.csv', 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=['date'] + sorted(all_pairs))
         writer.writeheader()
         

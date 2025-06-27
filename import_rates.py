@@ -50,7 +50,7 @@ def import_rates(cookie_value, dates_file="dates.txt"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Import exchange rates from Sharesight API')
-    parser.add_argument('cookie', help='Cookie string for authentication')
+    parser.add_argument('-c', '--cookie', help='Cookie string for authentication')
     parser.add_argument('-d', '--dates-file', default='dates.txt', help='File containing dates to fetch (default: dates.txt)')
     
     args = parser.parse_args()

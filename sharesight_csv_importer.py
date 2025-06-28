@@ -87,49 +87,66 @@ class SharesightCsvImporter:
                 }
             ]
 
-    def get_internal_exchange_rates(self, exchange_rates_file_path, date):
-        if os.path.exists(exchange_rates_file_path):
-            with open(exchange_rates_file_path, "r") as f:
-                reader = csv.DictReader(f)
-                exchange_rates = {row['date']: row for row in reader}
-                if date in exchange_rates:
-                    return exchange_rates[date]
-        else:
-            raise Exception(f"Exchange rates for {date} not found")
+    def get_internal_exchange_rates(self, exchange_rates_file_path: str, requested_date: datetime.date):
+        with open(exchange_rates_file_path, mode='r', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f)
+            exchange_rates = {row['date']: row for row in reader}
+            permitted_days_prior = 3
+            lookup_date = requested_date.strftime("%Y-%m-%d")
+            if lookup_date not in exchange_rates:
+                for i in range(1, permitted_days_prior + 1):
+                    lookup_date = (requested_date - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+                    print(f"Looking for exchange rates for {lookup_date} as {requested_date} not found")
+                    if lookup_date in exchange_rates:
+                        break
+                if lookup_date not in exchange_rates:
+                    raise ValueError(f"No exchange rates found for date {requested_date} or {permitted_days_prior} days prior. Please ensure the exchange rates file contains rates for this date.")
+            return exchange_rates[lookup_date]
     
-    def _generate_opening_balances_rows(self, portfolio_id: str, portfolio_currency_code, valuation_date: datetime.date, exchange_rates_file_path: TextIO | None):
-        last_balance_date = (valuation_date - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        valuation = self._api_client.get_valuation_on(portfolio_id, last_balance_date)
-        exchange_rates = self.get_internal_exchange_rates(exchange_rates_file_path, last_balance_date)
+    def _generate_opening_balances_rows(self, source_portfolio_id: str, source_portfolio_currency_code, valuation_date: datetime.date, exchange_rates_file_path: TextIO | None):
+        # get posiitions from the previous day, but value them on the valuation date
+        last_balance_date = (valuation_date - datetime.timedelta(days=1))
+        valuation = self._api_client.get_valuation_on(source_portfolio_id, last_balance_date.strftime("%Y-%m-%d"))
+        exchange_rates = self.get_internal_exchange_rates(exchange_rates_file_path, valuation_date)
+
+        print(f"Loaded valuation for {source_portfolio_id} on {valuation_date} with exchange rates {exchange_rates}")
         for holding in valuation.get("holdings"):
             instrument_currency = self._get_currency_for_holding(holding.get("id"))
-            portfolio_currency_to_instrument_currency_exchange_rate = exchange_rates.get(f"{portfolio_currency_code}/{instrument_currency}")
-            price_in_instrument_currency = holding.get("value") * portfolio_currency_to_instrument_currency_exchange_rate
+            print(holding)
+            print(f"Creating deemed aquisition using holding {holding.get('symbol')} in {instrument_currency} with value {holding.get('value')} from portfolio with currency {source_portfolio_currency_code}")
+            portfolio_currency_to_instrument_currency_exchange_rate = float(exchange_rates[f"{source_portfolio_currency_code}/{instrument_currency}"])
+            aud_to_instrument_currency_exchange_rate = float(exchange_rates[f"AUD/{instrument_currency}"])
+            gbp_to_instrument_currency_exchange_rate = float(exchange_rates[f"GBP/{instrument_currency}"])
+            price_in_source_portfolio_currency = float(holding.get("value")) / float(holding.get("quantity"))
+            price_in_instrument_currency = price_in_source_portfolio_currency * portfolio_currency_to_instrument_currency_exchange_rate
+            #print(f"calculating price {price_in_instrument_currency} for {holding.get('symbol')} in {instrument_currency} with portfolio currency {portfolio_currency_code} at exchange rates: {portfolio_currency_to_instrument_currency_exchange_rate}, {aud_to_instrument_currency_exchange_rate}, {gbp_to_instrument_currency_exchange_rate}")
+
             yield {
                 "skip_cash_account_transaction": True,
                 "unique_identifier": f"GENERATED-{holding.get('symbol')}",
                 "transaction_type": "BUY",
-                "transaction_date": valuation.get("balance_date"),
-                "symbol": self._remove_portfolio_qualifier_from_symbol(holding.get("symbol"), portfolio_id),
+                "transaction_date": valuation_date.strftime("%Y-%m-%d"),
+                "symbol": self._remove_portfolio_qualifier_from_symbol(holding.get("symbol"), source_portfolio_id),
                 "instrument_currency": instrument_currency,
                 "market": holding.get("market"),
                 "quantity": holding.get("quantity"),
-                "brokerage_in_gbp": 0,
-                "brokerage_in_aud": 0,
-                "price": price_in_instrument_currency,
+                "brokerage_in_amount_currency": 0,
+                "exchange_rate_aud": aud_to_instrument_currency_exchange_rate,
+                "exchange_rate_gbp": gbp_to_instrument_currency_exchange_rate,
+                "price_in_instrument_currency": price_in_instrument_currency,
                 "description": "Deemed aquisition at residency commencement"
             }
         # cash account valuations are not reliable from the valuation api endpoint, as they
         # convert from the account currency to the portfolio currency, and back again
         # so instead, load all the transactions, and total the balance
         for cash_account in valuation.get("cash_accounts"):
-            transactions = self._api_client.get_cash_account_transactions(cash_account.get('cash_account_id'), "2000-01-01", valuation.get("balance_date")).get("cash_account_transactions")
+            transactions = self._api_client.get_cash_account_transactions(cash_account.get('cash_account_id'), "2000-01-01", last_balance_date.strftime("%Y-%m-%d")).get("cash_account_transactions")
             total_amount = sum(float(t.get("amount")) for t in transactions)
             last_balance = transactions[0].get("balance")
             # confusingly value is in the portfolio_currency_code
             # not the account currency
-            currency_pair = f"{portfolio_currency_code}/{cash_account.get('currency_code')}"
-            portfolio_to_cash_account_exchange_rate = exchange_rates.get(currency_pair).get("rate") if portfolio_currency_code != cash_account.get('currency_code') else 1
+            currency_pair = f"{source_portfolio_currency_code}/{cash_account.get('currency_code')}"
+            portfolio_to_cash_account_exchange_rate = float(exchange_rates[currency_pair]) if source_portfolio_currency_code != cash_account.get('currency_code') else 1
             cash_account_name = self._get_cash_account_name_from_sharesight_cash_account(cash_account.get('name'), cash_account.get('currency_code'))
             calculated_total_amount = cash_account.get("value") * portfolio_to_cash_account_exchange_rate
             if (round(calculated_total_amount,2) != round(total_amount,2)):
@@ -139,7 +156,7 @@ class SharesightCsvImporter:
             yield {
                 "unique_identifier": f"GENERATED-{cash_account.get('currency_code')}-{cash_account_name}",
                 "transaction_type": "DEPOSIT",
-                "transaction_date": valuation.get("balance_date"),
+                "transaction_date": valuation_date.strftime("%Y-%m-%d"),
                 "amount": total_amount,
                 "amount_currency": cash_account.get("currency_code"),
                 "cash_account": cash_account_name,
@@ -398,10 +415,13 @@ class SharesightCsvImporter:
             # NB: shorts are not supported
             "quantity": data_row.get("quantity"),
             # needs to be in instrument currency
-            "price": data_row.get("price"),
+            "price": data_row.get("price_in_instrument_currency"),
             # has to be in portfolio currency or instrument currency
-            "brokerage": data_row.get("brokerage_in_gbp") if country_code == "GB" else data_row.get("brokerage_in_aud") if country_code == "AU" else "??",
-            "brokerage_currency": "GBP" if country_code == "GB" else "AUD" if country_code == "AU" else "??",
+            # in order for sharesight to use the supplied exchange_rate
+            # "brokerage": data_row.get("brokerage_in_amount_currency"),
+            # "brokerage_currency": data_row.get("amount_currency"),
+            "brokerage": data_row.get("brokerage_in_instrument_currency"),
+            "brokerage_currency_code": data_row.get("instrument_currency"),
             "exchange_rate": data_row.get("exchange_rate_gbp") if country_code == "GB" else data_row.get("exchange_rate_aud") if country_code=="AU" else "??",
             # needs to be in portfolio currency
             "cost_base": (data_row.get("amount_in_gbp") if country_code == "GB" else data_row.get("amount_in_aud") if country_code == "AU" else "??") if data_row.get("transaction_type") == "OPENING_BALANCE" else "",
@@ -418,14 +438,31 @@ class SharesightCsvImporter:
         holding_id = response_data.get('holding_id') if response_data else None
         if (not holding_id and len(errors) == 0):
             print(f"{log_line_prefix}\t{response.status_code} Couldn't find holding id but no error - {response_json}")
-        if (data_row.get("market").lower() != "other"):
-            # check instrument currency code is correct
-            holding_currency_code = self._get_currency_for_holding(holding_id)
-            if (holding_currency_code != data_row.get('instrument_currency')):
-                print(f"{log_line_prefix}\tERROR {data_row.get("symbol")} has instrument currency code {data_row.get('instrument_currency')} but Sharesight has set it to {holding_currency_code}")
+        # check instrument currency code is correct
+        holding_currency_code = self._get_currency_for_holding(holding_id)
+        if (holding_currency_code != data_row.get('instrument_currency')):
+            print(f"{log_line_prefix}\tERROR {data_row.get("symbol")} has instrument currency code {data_row.get('instrument_currency')} but Sharesight has set it to {holding_currency_code}")
+        
+        # validation of the data
+        if response_data["transaction_type"] in ["BUY", "SELL"]:
+            sharesight_gross_amount_in_instrument_currency = float(response_data["price"]) * float(response_data["quantity"])
+            sharesight_gross_amount_in_portfolio_currency = sharesight_gross_amount_in_instrument_currency / float(response_data["exchange_rate"])
+            brokerage_in_instrument_currency = float(response_data["brokerage"]) * (1 if response_data["transaction_type"] == "BUY" else -1 if response_data["transaction_type"] == "SELL" else 0)
+            brokerage_in_portfolio_currency = brokerage_in_instrument_currency / float(response_data["exchange_rate"])
+            sharesight_net_amount_in_portfolio_currency = round(sharesight_gross_amount_in_portfolio_currency + brokerage_in_portfolio_currency,2)
+            if (abs(sharesight_net_amount_in_portfolio_currency) != abs(float(response_data["value"]))):
+                print(f"{log_line_prefix}\tWARN Sharesight net amount in portfolio currency {sharesight_net_amount_in_portfolio_currency} does not match value {response_data.get('value')} for {data_row.get('symbol')}: {response_data}")
+            sharesight_net_amount_in_instrument_currency = round(sharesight_gross_amount_in_instrument_currency + brokerage_in_instrument_currency,2)
+            amount_in_instrument_currency = abs(round(float(data_row.get("amount_in_instrument_currency")) - float(data_row.get("accrued_income_in_instrument_currency") if data_row.get("accrued_income_in_instrument_currency") else 0),2))
+            if (sharesight_net_amount_in_instrument_currency != amount_in_instrument_currency):
+                print(f"{log_line_prefix}\tWARN Sharesight net amount in instrument currency {sharesight_net_amount_in_instrument_currency} does not match amount in instrument currency {amount_in_instrument_currency} for {data_row.get('symbol')}: {response_data}")
+            amount_in_account_currency = float(data_row.get("amount")) - float(data_row.get("accrued_income") if data_row.get("accrued_income") else 0)
+
+        
+        
         self._process_cash(cash_account_id, log_line_prefix, data_row)
 
-        if (float(data_row.get("accrued_income",0)) != 0 and (data_row.get("transaction_type") == "SELL" or data_row.get("transaction_type") == "BUY")):
+        if (float(data_row.get("accrued_income") if data_row.get("accrued_income") else 0) != 0 and (data_row.get("transaction_type") == "SELL" or data_row.get("transaction_type") == "BUY")):
             accrued_income_row = data_row.copy()
             accrued_income_row.pop("accrued_income")
             accrued_income_row.pop("accrued_income_in_instrument_currency")
@@ -480,6 +517,9 @@ class SharesightCsvImporter:
         self._process_cash(cash_account_id, log_line_prefix, data_row)
     
     def _process_cash(self, cash_account_id, log_line_prefix, data_row):
+        if (data_row.get("skip_cash_account_transaction")):
+            print(f"{log_line_prefix}\tWARN Skipping cash account transaction for {data_row.get('unique_identifier')}", file=sys.stderr)
+            return
         is_non_cash_tx = data_row.get("transaction_type") in self.NON_CASH_TX_TYPES
         if (is_non_cash_tx):
             if (float(data_row.get("amount")) != 0 and data_row.get("transaction_type") != "OPENING_BALANCE"):
@@ -487,13 +527,11 @@ class SharesightCsvImporter:
             return
         if (cash_account_id == None):
             print(f"{log_line_prefix}\tERROR Unable to find cash account {data_row.get("amount_currency")} {data_row.get('cash_account')}", file=sys.stderr)
-        if (data_row.get("skip_cash_account_transaction")):
-            print(f"{log_line_prefix}\tWARN Skipping cash account transaction for {data_row.get('unique_identifier')}", file=sys.stderr)
-            return
+        amount_in_account_currency = float(data_row.get("amount")) - float(data_row.get("accrued_income") if data_row.get("accrued_income") else 0)
         api_request_data = {
             "date_time": data_row.get("transaction_date"),
             "description": data_row.get("unique_identifier") + " " + data_row.get("description"),
-            "amount": float(data_row.get("amount")) - float(data_row.get("accrued_income", 0)),
+            "amount": amount_in_account_currency,
             "type_name": data_row.get("transaction_type"),
             "foreign_identifier": data_row.get("unique_identifier"),
         }

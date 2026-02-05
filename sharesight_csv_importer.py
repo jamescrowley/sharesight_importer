@@ -240,7 +240,7 @@ class SharesightCsvImporter:
                         # cannot rely on using symbol/market directly, as this doesn't work for custom instruments
                         existing_holding_id = portfolio_holdings_lookup.get(holding_id_lookup_key)
                         if (existing_holding_id == None):
-                            print(f'{log_line_prefix}\tERROR Unable to find holding id matching {holding_id_lookup_key} - {data_row.get("symbol")}, {data_row.get("market")}', file=sys.stderr)
+                            print(f'{log_line_prefix}\tERROR Unable to find holding id matching "{holding_id_lookup_key}" - {data_row.get("symbol")}, {data_row.get("market")}. Known holdings {portfolio_holdings_lookup}', file=sys.stderr)
                             return None
                         else:
                             self._process_payout(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup)

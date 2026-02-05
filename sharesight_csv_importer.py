@@ -119,7 +119,7 @@ class SharesightCsvImporter:
             gbp_to_instrument_currency_exchange_rate = float(exchange_rates[f"GBP/{instrument_currency}"])
             price_in_source_portfolio_currency = float(holding.get("value")) / float(holding.get("quantity"))
             price_in_instrument_currency = price_in_source_portfolio_currency * portfolio_currency_to_instrument_currency_exchange_rate
-            #print(f"calculating price {price_in_instrument_currency} for {holding.get('symbol')} in {instrument_currency} with portfolio currency {portfolio_currency_code} at exchange rates: {portfolio_currency_to_instrument_currency_exchange_rate}, {aud_to_instrument_currency_exchange_rate}, {gbp_to_instrument_currency_exchange_rate}")
+            amount_in_instrument_currency = holding.get("value") * portfolio_currency_to_instrument_currency_exchange_rate
 
             yield {
                 "skip_cash_account_transaction": True,
@@ -134,6 +134,7 @@ class SharesightCsvImporter:
                 "exchange_rate_aud": aud_to_instrument_currency_exchange_rate,
                 "exchange_rate_gbp": gbp_to_instrument_currency_exchange_rate,
                 "price_in_instrument_currency": price_in_instrument_currency,
+                "amount_in_instrument_currency": amount_in_instrument_currency,
                 "description": "Deemed aquisition at residency commencement"
             }
         # cash account valuations are not reliable from the valuation api endpoint, as they
@@ -459,8 +460,6 @@ class SharesightCsvImporter:
             amount_in_instrument_currency = abs(round(float(data_row.get("amount_in_instrument_currency")) - float(data_row.get("accrued_income_in_instrument_currency") if data_row.get("accrued_income_in_instrument_currency") else 0),2))
             if (sharesight_net_amount_in_instrument_currency != amount_in_instrument_currency):
                 print(f"{log_line_prefix}\tWARN Sharesight net amount in instrument currency {sharesight_net_amount_in_instrument_currency} does not match amount in instrument currency {amount_in_instrument_currency} for {data_row.get('symbol')}: {response_data}")
-            amount_in_account_currency = float(data_row.get("amount")) - float(data_row.get("accrued_income") if data_row.get("accrued_income") else 0)
-
         
         
         self._process_cash(cash_account_id, log_line_prefix, data_row)

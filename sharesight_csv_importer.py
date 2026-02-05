@@ -164,7 +164,7 @@ class SharesightCsvImporter:
                 "description": "Opening Balance"
             }
     
-    def import_file(self, file_path: TextIO, portfolio_name: str, country_code: str, delete_existing: bool, min_date: datetime.date, opening_balance_on: datetime.date | None, opening_balance_from: str | None, min_line: int, max_line: int, prices_file_path: TextIO, exchange_rates_file_path: TextIO | None):
+    def import_file(self, file_path: TextIO, portfolio_name: str, country_code: str, delete_existing: bool, min_date: datetime.date, exclude_exdate_transactions_before_min_date, opening_balance_on: datetime.date | None, opening_balance_from: str | None, min_line: int, max_line: int, prices_file_path: TextIO, exchange_rates_file_path: TextIO | None):
         opening_balances = []
         if ((min_date or min_line or max_line) and delete_existing):
             print(f"You probably didn't want to delete existing trades while restarting/running a specific line of the file. Exiting.", file=sys.stderr)
@@ -178,9 +178,9 @@ class SharesightCsvImporter:
             print('    ' + '\n    '.join(f"{p}" for p in opening_balances))
             min_date = opening_balance_on
             
-        self._process_transactions(file_path, portfolio_name, country_code, delete_existing, min_date, min_line, max_line, opening_balances, prices_file_path)
+        self._process_transactions(file_path, portfolio_name, country_code, delete_existing, min_date, exclude_exdate_transactions_before_min_date, min_line, max_line, opening_balances, prices_file_path)
         
-    def _process_transactions(self, file_path: TextIO, portfolio_name: str, country_code: str, delete_existing: bool, min_date: datetime.date, min_line: int, max_line: int, injected_opening_balances: list[dict], prices_file_path: TextIO):
+    def _process_transactions(self, file_path: TextIO, portfolio_name: str, country_code: str, delete_existing: bool, min_date: datetime.date, exclude_exdate_transactions_before_min_date: bool, min_line: int, max_line: int, injected_opening_balances: list[dict], prices_file_path: TextIO):
         cash_accounts_in_file = self._get_unique_cash_accounts_in_file(file_path)
         portfolio_id, cash_accounts = self._get_or_create_portfolio(portfolio_name, country_code, cash_accounts_in_file, delete_existing)
 
@@ -210,8 +210,11 @@ class SharesightCsvImporter:
                 print(f"Filtering transactions after line {max_line}")
                 filtered_reader = filter(lambda row: reader.line_num <= max_line, filtered_reader)
             if min_date:
-                print(f"Filtering transactions before {min_date}")
-                filtered_reader = filter(lambda row: datetime.datetime.strptime(row['transaction_date'], "%Y-%m-%d").date() >= min_date, filtered_reader)
+                print(f"Filtering transactions with a tx date before {min_date}"  )
+                filtered_reader = filter(lambda row: 
+                                            (datetime.datetime.strptime(row['transaction_date'], "%Y-%m-%d").date()) >= min_date and 
+                                            (not exclude_exdate_transactions_before_min_date or row['goes_ex_on'] == '' or datetime.datetime.strptime(row['goes_ex_on'], "%Y-%m-%d").date() >= min_date) 
+                                            , filtered_reader)
             if (injected_opening_balances):
                 filtered_reader = chain(injected_opening_balances, filtered_reader)
             

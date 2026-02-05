@@ -367,7 +367,7 @@ class SharesightCsvImporter:
             "quantity": float(data_row.get("quantity")),
             "symbol": data_row.get("symbol"),
             "market": data_row.get("market").upper(),
-            "comments": "none"
+            "comments": data_row.get("unique_identifier") + " " + data_row.get("description")
         }
         response = self._api_client.try_create_holding_merge(portfolio_id, merge_data)
         self._print_response_status(log_line_prefix, merge_data, response)

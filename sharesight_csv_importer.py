@@ -278,7 +278,7 @@ class SharesightCsvImporter:
             for data_row in reader:
                 custom_investment_id = portfolio_custom_investments_lookup.get(data_row['symbol'])
                 if custom_investment_id:
-                    print(f"Syncing custom instrument price for {data_row['symbol']}")
+                    print(f"Syncing custom instrument price for {data_row['symbol']} on {data_row['date']}")
                     api_request_data = {
                         "last_traded_price": data_row['price'],
                         "last_traded_on": data_row['date']
@@ -289,6 +289,7 @@ class SharesightCsvImporter:
                             print(f"Replacing existing price of {existing_prices[0].get("last_traded_price")} with {api_request_data['last_traded_price']} for {data_row['symbol']} on {data_row['date']}")
                             self._api_client.put_custom_investment_price(existing_prices[0]['id'], api_request_data)
                     else:
+                        print(f"Adding new price of {api_request_data['last_traded_price']} for {data_row['symbol']} on {data_row['date']}")
                         self._api_client.create_custom_investment_price(custom_investment_id, api_request_data)
 
     def _get_portfolio_by_name(self, portfolio_name: str):
@@ -350,6 +351,8 @@ class SharesightCsvImporter:
             print(f"Removing existing trades and cash account transactions")
             self._api_client.delete_all_cash_account_transactions_in_portfolio(portfolio_id)
             self._api_client.delete_all_holdings(portfolio_id)
+            print(f"Removing existing custom instruments")
+            self._api_client.delete_custom_instruments(portfolio_id, self.CUSTOM_INSTRUMENT_SUFFIX)
             cash_accounts = self._create_cash_accounts(portfolio_id, cash_accounts_in_file)
         return portfolio_id,cash_accounts
     

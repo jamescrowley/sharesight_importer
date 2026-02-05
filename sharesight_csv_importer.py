@@ -407,15 +407,18 @@ class SharesightCsvImporter:
     def _get_currency_for_holding(self, holding_id):
         response_holding = self._api_client.get_holding(holding_id)
         return response_holding['holding']['instrument']['currency_code']
+    
+    def _is_capital_call_or_return(self, data_row):
+        return data_row.get("transaction_type") == "CAPITAL_CALL" or data_row.get("transaction_type") == "CAPITAL_RETURN"
 
     def _process_trade(self, portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, portfolio_payouts_lookup):
-        is_capital_call_or_return = data_row.get("transaction_type") == "CAPITAL_CALL" or data_row.get("transaction_type") == "CAPITAL_RETURN"
+        is_capital_call_or_return = self._is_capital_call_or_return(data_row)
         if (float(data_row.get("quantity")) < 0):
             print(f"{log_line_prefix}\tWARN Shorts are not supported by Sharesight. Quantity is negative: {data_row.get('quantity')}")
         api_request_data = {
             "unique_identifier": data_row.get("unique_identifier"),
             "transaction_type": data_row.get("transaction_type"),
-            "transaction_date": data_row.get("transaction_date"),
+            "transaction_date": (data_row.get("goes_ex_on") if data_row.get("goes_ex_on") != "" else data_row.get("transaction_date")) if is_capital_call_or_return else data_row.get("transaction_date"),
             "portfolio_id": portfolio_id,
             "symbol": data_row.get("symbol"),
             "market": data_row.get("market"),
@@ -434,7 +437,7 @@ class SharesightCsvImporter:
             "cost_base": (data_row.get("amount_in_gbp") if country_code == "GB" else data_row.get("amount_in_aud") if country_code == "AU" else "??") if data_row.get("transaction_type") == "OPENING_BALANCE" else "",
             # needs to be in instrument currency
             "capital_return_value": abs(float(data_row.get("amount_in_instrument_currency"))) if is_capital_call_or_return else "",
-            "paid_on": (data_row.get("goes_ex_on") if data_row.get("goes_ex_on") != "" else data_row.get("transaction_date")) if is_capital_call_or_return else "",
+            "paid_on": data_row.get("transaction_date") if is_capital_call_or_return else "",
             "comments": data_row.get("unique_identifier") + " " + data_row.get("description")
         }
         response = self._api_client.try_create_trade(api_request_data)

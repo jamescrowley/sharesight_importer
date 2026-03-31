@@ -26,6 +26,11 @@ class SharesightCsvImporter:
         "OPENING_BALANCE": "trade",
         "ADJUST_COST_BASE": "trade",
         "CAPITAL_CALL": "trade",
+        # 
+        "RETAINED_NET_INCOME": "accumulation", # becomes dividend+capital_call (capital call increases cost base)
+        # hmm, can't we just ignore this then?
+        # the cost base, is original acquisition cost plus accumulation income minus equalisation payments.
+        "RETAINED_EQUALISATION": "accumulation", # becomes capital_return+capital_call. for non-retained equalisation just use CAPITAL_RETURN directly
         "DEPOSIT": "cash",
         "WITHDRAWAL": "cash",
         "INTEREST_PAYMENT": "cash",
@@ -35,8 +40,9 @@ class SharesightCsvImporter:
     }
     # cancel is not strictly a non-cash transaction, we are just using it for transfer
     # of holdings across portfolios
-    NON_CASH_TX_TYPES = ["OPENING_BALANCE", "CANCEL", "MERGE_BUY", "MERGE_CANCEL", "CONSOLD", "BONUS", "SPLIT"]
+    NON_CASH_TX_TYPES = ["OPENING_BALANCE", "CANCEL", "MERGE_BUY", "MERGE_CANCEL", "CONSOLD", "BONUS", "SPLIT", "RETAINED_NET_INCOME", "RETAINED_EQUALISATION"]
     CUSTOM_INSTRUMENT_SUFFIX = "(AUTO)"
+    INTERNAL_SKIP_CASH_TX_FLAG = "skip_cash_account_transaction"
 
     def __init__(self, api_client: SharesightApiClient):
         self._api_client = api_client
@@ -122,7 +128,7 @@ class SharesightCsvImporter:
             amount_in_instrument_currency = holding.get("value") * portfolio_currency_to_instrument_currency_exchange_rate
 
             yield {
-                "skip_cash_account_transaction": True,
+                self.INTERNAL_SKIP_CASH_TX_FLAG: True,
                 "unique_identifier": f"GENERATED-{holding.get('symbol')}",
                 "transaction_type": "BUY",
                 "transaction_date": valuation_date.strftime("%Y-%m-%d"),
@@ -242,8 +248,14 @@ class SharesightCsvImporter:
                         if (existing_holding_id == None):
                             print(f'{log_line_prefix}\tERROR Unable to find holding id matching "{holding_id_lookup_key}" - {data_row.get("symbol")}, {data_row.get("market")}. Known holdings {portfolio_holdings_lookup}', file=sys.stderr)
                             return None
-                        else:
-                            self._process_payout(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup)
+                        self._process_payout(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup)
+                    case 'accumulation':
+                        # dividend is a payout, equalisation is a capital_return
+                        existing_holding_id = portfolio_holdings_lookup.get(holding_id_lookup_key)
+                        if (existing_holding_id == None):
+                            print(f'{log_line_prefix}\tERROR Unable to find holding id matching "{holding_id_lookup_key}" - {data_row.get("symbol")}, {data_row.get("market")}. Known holdings {portfolio_holdings_lookup}', file=sys.stderr)
+                            return None
+                        self._process_accumulation(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup)
                     case 'merge':
                         next_data_row = reader.__next__()
                         next_data_row.update({"symbol": self._get_symbol_key_with_portfolio_qualifier_for_custom_instruments(next_data_row, portfolio_id)})
@@ -272,7 +284,45 @@ class SharesightCsvImporter:
         for cash_account in set(cash_accounts.values()):
             if cash_account:
                 self._api_client.resync_cash_account(cash_account)
-
+    
+    def _process_accumulation(self, portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup):
+        if (float(data_row["amount"]) == 0):
+            print(f"{log_line_prefix}\tINFO Skipping due to zero amount")
+            return
+        # no cash account is used for accumulations
+        match data_row.get("transaction_type"):
+            case "RETAINED_NET_INCOME":
+                dividend_data_row = data_row.copy()
+                dividend_data_row.update({
+                    self.INTERNAL_SKIP_CASH_TX_FLAG: True
+                })
+                # transaction_type is not used for payouts anyway
+                self._process_payout(portfolio_id, country_code, cash_account_id, log_line_prefix, dividend_data_row, existing_holding_id, portfolio_payouts_lookup)
+            case "RETAINED_EQUALISATION":
+                equalisation_data_row = data_row.copy()
+                equalisation_data_row.update({
+                    self.INTERNAL_SKIP_CASH_TX_FLAG: True,
+                    "transaction_type": "CAPITAL_RETURN"
+                })
+                self._process_trade(portfolio_id, country_code, cash_account_id, log_line_prefix, equalisation_data_row, portfolio_payouts_lookup)
+            case _:
+                raise ValueError(f"Unexpected accumulation transaction type: {data_row.get('transaction_type')}")
+        # reverse each of divdiend and equalisation with a correspodning capital_call
+        # as this cash isn't actually distributed
+        capital_call_data_row = data_row.copy()
+        capital_call_data_row.update(
+            {
+                self.INTERNAL_SKIP_CASH_TX_FLAG: True,
+                "unique_identifier": f"{data_row.get('unique_identifier')}_CALL",
+                "transaction_type": "CAPITAL_CALL",
+                "amount": float(data_row.get("amount")) * -1,
+                "amount_in_instrument_currency": float(data_row.get("amount_in_instrument_currency")) * -1,
+                "amount_in_aud": float(data_row.get("amount_in_aud")) * -1,
+                "amount_in_gbp": float(data_row.get("amount_in_gbp")) * -1,
+            }
+        )
+        self._process_trade(portfolio_id, country_code, cash_account_id, log_line_prefix, capital_call_data_row, portfolio_payouts_lookup)  
+        
     def _process_prices(self, prices_file_path: TextIO, portfolio_id: str, country_code: str):
         print(f"Syncing custom instruments prices")
         portfolio_custom_investments = self._api_client.get_custom_investments(portfolio_id)['custom_investments']
@@ -413,6 +463,9 @@ class SharesightCsvImporter:
 
     def _process_trade(self, portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, portfolio_payouts_lookup):
         is_capital_call_or_return = self._is_capital_call_or_return(data_row)
+        if (is_capital_call_or_return and float(data_row["amount"]) == 0):
+            print(f"{log_line_prefix}\tINFO Skipping due to zero amount")
+            return
         if (float(data_row.get("quantity")) < 0):
             print(f"{log_line_prefix}\tWARN Shorts are not supported by Sharesight. Quantity is negative: {data_row.get('quantity')}")
         api_request_data = {
@@ -441,32 +494,34 @@ class SharesightCsvImporter:
             "comments": data_row.get("unique_identifier") + " " + data_row.get("description")
         }
         response = self._api_client.try_create_trade(api_request_data)
-        errors,response_json  = self._get_errors(response)
+        errors,response_json = self._get_errors(response)
         self._print_response_status(log_line_prefix, api_request_data, response)
-        
         response_data = response_json.get('trade')
         holding_id = response_data.get('holding_id') if response_data else None
-        if (not holding_id and len(errors) == 0):
-            print(f"{log_line_prefix}\t{response.status_code} Couldn't find holding id but no error - {response_json}")
-        # check instrument currency code is correct
-        holding_currency_code = self._get_currency_for_holding(holding_id)
-        if (holding_currency_code != data_row.get('instrument_currency')):
-            print(f"{log_line_prefix}\tERROR {data_row.get("symbol")} has instrument currency code {data_row.get('instrument_currency')} but Sharesight has set it to {holding_currency_code}")
-        
-        # validation of the data
-        if response_data["transaction_type"] in ["BUY", "SELL"]:
-            sharesight_gross_amount_in_instrument_currency = float(response_data["price"]) * float(response_data["quantity"])
-            sharesight_gross_amount_in_portfolio_currency = sharesight_gross_amount_in_instrument_currency / float(response_data["exchange_rate"])
-            brokerage_in_instrument_currency = float(response_data["brokerage"]) * (1 if response_data["transaction_type"] == "BUY" else -1 if response_data["transaction_type"] == "SELL" else 0)
-            brokerage_in_portfolio_currency = brokerage_in_instrument_currency / float(response_data["exchange_rate"])
-            sharesight_net_amount_in_portfolio_currency = round(sharesight_gross_amount_in_portfolio_currency + brokerage_in_portfolio_currency,2)
-            if (abs(sharesight_net_amount_in_portfolio_currency) != abs(float(response_data["value"]))):
-                print(f"{log_line_prefix}\tWARN Sharesight net amount in portfolio currency {sharesight_net_amount_in_portfolio_currency} does not match value {response_data.get('value')} for {data_row.get('symbol')}: {response_data}")
-            sharesight_net_amount_in_instrument_currency = round(sharesight_gross_amount_in_instrument_currency + brokerage_in_instrument_currency,2)
-            amount_in_instrument_currency = abs(round(float(data_row.get("amount_in_instrument_currency")) - float(data_row.get("accrued_income_in_instrument_currency") if data_row.get("accrued_income_in_instrument_currency") else 0),2))
-            if (sharesight_net_amount_in_instrument_currency != amount_in_instrument_currency):
-                print(f"{log_line_prefix}\tWARN Sharesight net amount in instrument currency {sharesight_net_amount_in_instrument_currency} does not match amount in instrument currency {amount_in_instrument_currency} for {data_row.get('symbol')}: {response_data}")
-        
+        if (not holding_id):
+            if (len(errors) == 0):
+                print(f"{log_line_prefix}\t{response.status_code} Couldn't find holding id but no error - {response_json} - skipping instrument currency check and validation")
+            else:
+                print(f"{log_line_prefix}\t{response.status_code} Couldn't find holding id due to error - {response_json} - skipping instrument currency check and validation")
+        else:
+            # check instrument currency code is correct
+            holding_currency_code = self._get_currency_for_holding(holding_id)
+            if (holding_currency_code != data_row.get('instrument_currency')):
+                print(f"{log_line_prefix}\tERROR {data_row.get("symbol")} has instrument currency code {data_row.get('instrument_currency')} but Sharesight has set it to {holding_currency_code}")
+            # validation of the data
+            if response_data["transaction_type"] in ["BUY", "SELL"]:
+                sharesight_gross_amount_in_instrument_currency = float(response_data["price"]) * float(response_data["quantity"])
+                sharesight_gross_amount_in_portfolio_currency = sharesight_gross_amount_in_instrument_currency / float(response_data["exchange_rate"])
+                brokerage_in_instrument_currency = float(response_data["brokerage"]) * (1 if response_data["transaction_type"] == "BUY" else -1 if response_data["transaction_type"] == "SELL" else 0)
+                brokerage_in_portfolio_currency = brokerage_in_instrument_currency / float(response_data["exchange_rate"])
+                sharesight_net_amount_in_portfolio_currency = round(sharesight_gross_amount_in_portfolio_currency + brokerage_in_portfolio_currency,2)
+                if (abs(sharesight_net_amount_in_portfolio_currency) != abs(float(response_data["value"]))):
+                    print(f"{log_line_prefix}\tWARN Sharesight net amount in portfolio currency {sharesight_net_amount_in_portfolio_currency} does not match value {response_data.get('value')} for {data_row.get('symbol')}: {response_data}")
+                sharesight_net_amount_in_instrument_currency = round(sharesight_gross_amount_in_instrument_currency + brokerage_in_instrument_currency,2)
+                amount_in_instrument_currency = abs(round(float(data_row.get("amount_in_instrument_currency")) - float(data_row.get("accrued_income_in_instrument_currency") if data_row.get("accrued_income_in_instrument_currency") else 0),2))
+                if (sharesight_net_amount_in_instrument_currency != amount_in_instrument_currency):
+                    print(f"{log_line_prefix}\tWARN Sharesight net amount in instrument currency {sharesight_net_amount_in_instrument_currency} does not match amount in instrument currency {amount_in_instrument_currency} for {data_row.get('symbol')}: {response_data}")
+            
         
         self._process_cash(cash_account_id, log_line_prefix, data_row)
 
@@ -519,14 +574,14 @@ class SharesightCsvImporter:
             response = self._api_client.try_create_payout(api_request_data)
             self._print_response_status(log_line_prefix, api_request_data, response)
         else:
-            print(f"{log_line_prefix}\tSkipping payout as it already exists")
+            print(f"{log_line_prefix}\tWARN: Skipping payout as it already appears to exist")
             # but we still want to try creating the cash record, as this has it's own
             # duplicate checking
         self._process_cash(cash_account_id, log_line_prefix, data_row)
     
     def _process_cash(self, cash_account_id, log_line_prefix, data_row):
-        if (data_row.get("skip_cash_account_transaction")):
-            print(f"{log_line_prefix}\tWARN Skipping cash account transaction for {data_row.get('unique_identifier')}", file=sys.stderr)
+        if (data_row.get(self.INTERNAL_SKIP_CASH_TX_FLAG)):
+            print(f"{log_line_prefix}\tINFO Skipping cash account transaction for {data_row.get('unique_identifier')}", file=sys.stderr)
             return
         is_non_cash_tx = data_row.get("transaction_type") in self.NON_CASH_TX_TYPES
         if (is_non_cash_tx):

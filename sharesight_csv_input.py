@@ -3,6 +3,22 @@ import datetime
 from dataclasses import dataclass
 
 
+TRANSACTION_CSV_FIELDS = [
+    "unique_identifier", "transaction_type", "transaction_date", "goes_ex_on",
+    "symbol", "market", "quantity", "price_in_instrument_currency", "amount",
+    "amount_currency", "cash_account", "description",
+    "brokerage_in_instrument_currency", "instrument_currency", "exchange_rate_aud",
+    "exchange_rate_gbp", "amount_in_instrument_currency", "amount_in_aud",
+    "amount_in_gbp", "accrued_income", "accrued_income_in_instrument_currency",
+    "accrued_income_in_aud", "accrued_income_in_gbp", "symbol_name",
+    "instrument_country_code", "symbol_type", "tax_withheld",
+    "tax_withheld_currency", "tax_credit", "skip_cash_account_transaction",
+    "opening_balance_source_portfolio", "opening_balance_source_currency",
+    "opening_balance_source_value", "opening_balance_valuation_date",
+    "opening_balance_exchange_rate_date",
+]
+
+
 @dataclass(frozen=True)
 class TransactionRow:
     line_number: int
@@ -75,6 +91,78 @@ def load_transactions(file_path, injected_rows, min_date,
 
     generated_rows = [TransactionRow(1, dict(data_row)) for data_row in injected_rows]
     return generated_rows + transactions
+
+
+def load_frozen_opening_balances(file_path):
+    rows = _read_rows(file_path)
+    if not rows:
+        raise ValueError("Opening-balance CSV must contain at least one row")
+
+    dates = {_parse_date(row, "transaction_date") for row in rows}
+    if len(dates) != 1:
+        raise ValueError("Opening-balance CSV rows must all use the same transaction date")
+    opening_date = dates.pop()
+    identifiers = set()
+    for row in rows:
+        data = row.data
+        identifier = data.get("unique_identifier")
+        if not identifier:
+            raise ValueError(f"Line {row.line_number}: opening balance has no unique_identifier")
+        if identifier in identifiers:
+            raise ValueError(f"Line {row.line_number}: duplicate opening-balance identifier {identifier}")
+        identifiers.add(identifier)
+        transaction_type = data.get("transaction_type")
+        is_holding = (
+            transaction_type == "BUY"
+            and str(data.get("skip_cash_account_transaction", "")).lower() == "true"
+        )
+        is_cash = transaction_type == "DEPOSIT"
+        if not (is_holding or is_cash):
+            raise ValueError(
+                f"Line {row.line_number}: opening balances must be non-cash BUY or DEPOSIT rows"
+            )
+    return rows, opening_date
+
+
+def validate_opening_boundary(file_path, opening_rows, opening_date,
+                              exclude_exdate_transactions_before_min_date):
+    ordinary_rows = _read_rows(file_path)
+    opening_identifiers = {row.data["unique_identifier"] for row in opening_rows}
+    for row in ordinary_rows:
+        identifier = row.data.get("unique_identifier")
+        if identifier in opening_identifiers:
+            raise ValueError(
+                f"Line {row.line_number}: identifier {identifier} also occurs in opening balances"
+            )
+        transaction_date = _parse_date(row, "transaction_date")
+        if transaction_date < opening_date:
+            raise ValueError(
+                f"Line {row.line_number}: transaction date {transaction_date} is before "
+                f"opening-balance date {opening_date}"
+            )
+        goes_ex_on = row.data.get("goes_ex_on") or ""
+        if exclude_exdate_transactions_before_min_date and goes_ex_on:
+            ex_date = _parse_date(row, "goes_ex_on")
+            if ex_date < opening_date:
+                raise ValueError(
+                    f"Line {row.line_number}: ex-date {ex_date} is before opening-balance "
+                    f"date {opening_date}"
+                )
+
+
+def _read_rows(file_path):
+    with open(file_path, mode="r", encoding="utf-8-sig") as file:
+        reader = csv.DictReader(file)
+        return [TransactionRow(reader.line_num, dict(data_row)) for data_row in reader]
+
+
+def _parse_date(row, field):
+    try:
+        return datetime.datetime.strptime(row.data[field], "%Y-%m-%d").date()
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(
+            f"Line {row.line_number}: invalid {field} {row.data.get(field)!r}"
+        ) from error
 
 
 def validate_transactions(transactions, country_code, supported_transaction_types):

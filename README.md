@@ -12,7 +12,7 @@ The code is tailored to Australian (`AU`) and United Kingdom (`GB`) portfolios a
 - Cash activity: `DEPOSIT`, `WITHDRAWAL`, `INTEREST_PAYMENT`, `INTEREST_CHARGED`, `FEE`, and `FEE_REIMBURSEMENT`.
 - Sharesight custom instruments (`market=OTHER`) and a separate custom-price CSV.
 - Date and source-line filters for restarting or importing part of a file.
-- Generated opening balances from an existing Sharesight portfolio, using a local exchange-rate CSV.
+- Frozen opening-balance CSVs exported from an existing Sharesight portfolio using a local exchange-rate CSV.
 
 ## Requirements
 
@@ -41,38 +41,53 @@ Run the entry point from the repository root:
 
 ```sh
 uv run python __main__.py \
-  --portfolio_name "My Portfolio" \
-  --file_name transactions.csv \
-  --country_code AU
+  import \
+  --portfolio-name "My Portfolio" \
+  --file-name transactions.csv \
+  --country-code AU
 ```
 
 Useful optional arguments:
 
 ```text
---prices_file_name prices.csv       Import custom-instrument prices
---min_date YYYY-MM-DD               Skip earlier transactions
---min_line N / --max_line N         Process a source line range (header is line 1)
---exclude_exdate_transactions_before_min_date
+--prices-file-name prices.csv       Import custom-instrument prices
+--opening-balances-file-name FILE   Prepend a frozen opening-balance CSV
+--min-date YYYY-MM-DD               Skip earlier transactions
+--min-line N / --max-line N         Process a source line range (header is line 1)
+--exclude-exdate-transactions-before-min-date
                                     Also apply the minimum date to ex-dates
 --verbose                           Print requests as curl commands
---delete_existing                  Clear existing holdings/cash activity first
+--delete-existing                   Clear existing holdings/cash activity first
 ```
 
-`--delete_existing` is destructive: it deletes portfolio cash transactions, holdings, and importer-created custom instruments before recreating data. The importer refuses to combine this option with date or line filters.
+`--delete-existing` is destructive: it deletes portfolio cash transactions, holdings, and importer-created custom instruments before recreating data. The importer refuses to combine this option with date or line filters.
 
-To create opening balances from another portfolio, all three options are required:
+Opening balances use an explicit two-step workflow. First export and inspect a frozen CSV; this reads the source portfolio but does not mutate a portfolio:
 
 ```sh
 uv run python __main__.py \
-  -p "New Portfolio" -f transactions.csv -c AU \
-  --opening_balance_on 2025-07-01 \
-  --opening_balance_from "Existing Portfolio" \
-  --exchange_rates_file_name exchange_rates.csv
+  export-opening-balances \
+  --source-portfolio-name "Existing Portfolio" \
+  --valuation-date 2025-07-01 \
+  --exchange-rates-file-name exchange_rates.csv \
+  --output-file opening-balances-2025-07-01.csv
 ```
+
+The exporter refuses to replace an existing file unless `--overwrite` is supplied. It values the source portfolio at the end of the preceding day, treats its native-currency value as authoritative, and records the actual exchange-rate date used (up to three days before the requested date).
+
+Then pass the frozen file to the normal import:
+
+```sh
+uv run python __main__.py \
+  import -p "New Portfolio" -f transactions.csv -c AU \
+  --opening-balances-file-name opening-balances-2025-07-01.csv
+```
+
+All frozen rows must share one date and contain only non-cash `BUY` rows or cash `DEPOSIT` rows. The importer always includes every opening row. Ordinary rows on the same date are allowed; earlier ordinary rows are rejected before any target portfolio setup. Line filters apply only to the ordinary transaction file. If `--min-date` is also supplied, it must equal the frozen opening date.
 
 ## CSV inputs
 
-The transaction schema is implicit in `sharesight_csv_importer.py`; there is no formal schema validator. Every row should have the common fields below, leaving non-applicable values blank:
+The canonical output column order is defined in `sharesight_csv_input.py`. Every ordinary row should have the common fields below, leaving non-applicable values blank:
 
 ```text
 unique_identifier,transaction_type,transaction_date,symbol,market,quantity,

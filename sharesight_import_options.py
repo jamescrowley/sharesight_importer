@@ -4,13 +4,6 @@ from os import PathLike
 
 
 @dataclass(frozen=True)
-class OpeningBalanceOptions:
-    valuation_date: date
-    source_portfolio_name: str
-    exchange_rates_file_path: str | PathLike
-
-
-@dataclass(frozen=True)
 class ImportOptions:
     delete_existing: bool = False
     min_date: date | None = None
@@ -18,4 +11,4 @@ class ImportOptions:
     min_line: int | None = None
     max_line: int | None = None
     prices_file_path: str | PathLike | None = None
-    opening_balance: OpeningBalanceOptions | None = None
+    opening_balances_file_path: str | PathLike | None = None

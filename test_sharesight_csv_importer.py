@@ -6,7 +6,7 @@ from pathlib import Path
 from sharesight_csv_importer import SharesightCsvImporter
 from sharesight_custom_instruments import AUTO_NAME_SUFFIX
 from sharesight_api_client import ApiResult
-from sharesight_import_options import ImportOptions, OpeningBalanceOptions
+from sharesight_import_options import ImportOptions
 
 # Test Data Constants
 PORTFOLIO_NAME = "Test Portfolio"
@@ -91,27 +91,18 @@ class TestSharesightCsvImporter(unittest.TestCase):
 
         self.importer = SharesightCsvImporter(self.mock_api_client)
 
-    def _run_import(self, csv_data, portfolio_name=PORTFOLIO_NAME, country_code=COUNTRY_CODE, delete_existing=False, min_date=None, exclude_exdate_transactions_before_min_date=None, opening_balance_on=None, opening_balance_from=None, min_line=None, max_line=None, prices_csv_data=None, exchange_rates_csv_data=None):
+    def _run_import(self, csv_data, portfolio_name=PORTFOLIO_NAME, country_code=COUNTRY_CODE, delete_existing=False, min_date=None, exclude_exdate_transactions_before_min_date=None, opening_balances_csv_data=None, min_line=None, max_line=None, prices_csv_data=None):
         """Helper to run the import process with mock file."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             transactions_path = temp_path / "transactions.csv"
             transactions_path.write_text(csv_data, encoding="utf-8")
             prices_path = temp_path / "prices.csv" if prices_csv_data else None
-            exchange_rates_path = temp_path / "exchange_rates.csv" if exchange_rates_csv_data else None
+            opening_balances_path = temp_path / "opening-balances.csv" if opening_balances_csv_data else None
             if prices_path:
                 prices_path.write_text(prices_csv_data, encoding="utf-8")
-            if exchange_rates_path:
-                exchange_rates_path.write_text(exchange_rates_csv_data, encoding="utf-8")
-
-            opening_balance = (
-                OpeningBalanceOptions(
-                    valuation_date=opening_balance_on,
-                    source_portfolio_name=opening_balance_from,
-                    exchange_rates_file_path=exchange_rates_path,
-                )
-                if opening_balance_on else None
-            )
+            if opening_balances_path:
+                opening_balances_path.write_text(opening_balances_csv_data, encoding="utf-8")
             options = ImportOptions(
                 delete_existing=delete_existing,
                 min_date=min_date,
@@ -119,7 +110,7 @@ class TestSharesightCsvImporter(unittest.TestCase):
                 min_line=min_line,
                 max_line=max_line,
                 prices_file_path=prices_path,
-                opening_balance=opening_balance,
+                opening_balances_file_path=opening_balances_path,
             )
             self.importer.import_file(
                 transactions_path, portfolio_name, country_code, options
@@ -247,109 +238,25 @@ tx3,BUY,2023-03-10,MYFUND,OTHER,50,10.0,501.0,USD,My USD Account,Custom Fund,1,U
 
         self.mock_api_client.resync_cash_account.assert_called_once_with(CASH_ACC_USD_ID)
 
-    def test_opening_balance_generation(self):
-        """Test generating opening balances from another portfolio."""
-        opening_portfolio_name = "Source Portfolio"
-        opening_portfolio_id = 987
-        opening_date = datetime.date(2023, 1, 1)
-
-        # Mock responses for the *source* portfolio
-        self.mock_api_client.get_portfolios.side_effect = [
-            {'portfolios': [{'id': opening_portfolio_id, 'name': opening_portfolio_name, 'currency_code': 'GBP'}]}, # First call for source
-            {'portfolios': []} # Second call for target (doesn't exist yet)
-        ]
-        self.mock_api_client.get_cash_accounts.side_effect = [
-             {'cash_accounts': [{'id': 111, 'name': 'Source GBP Acc (GBP)', 'currency': 'GBP'}]}, # Source cash accounts
-             {'cash_accounts': []} # Target cash accounts (initially)
-        ]
-
-        mock_valuation = {
-            'balance_date': opening_date.strftime("%Y-%m-%d"),
-            'holdings': [
-                {'id': 201, 'symbol': 'VUSA', 'market': 'LSE', 'quantity': 100.0, 'value': 5000.0},
-                {'id': 202, 'symbol': f'MYFUND-{opening_portfolio_id}', 'market': 'OTHER', 'quantity': 50.0, 'value': 500.0}
-            ],
-            'cash_accounts': [
-                {'cash_account_id': 111, 'name': 'Source GBP Acc (GBP)', 'currency_code': 'GBP', 'value': 1000.0}
-            ]
-        }
-        self.mock_api_client.get_valuation_on.return_value = mock_valuation
-        # Mock cash transactions for balance calculation in source portfolio
-        self.mock_api_client.get_cash_account_transactions.return_value = {
-            'cash_account_transactions': [
-                 # Sharesight returns newest first
-                 {'amount': '1000.00', 'balance': 1000.00, 'date_time': '2022-12-31T10:00:00Z'},
-                 {'amount': '0.00', 'balance': 0.00, 'date_time': '2022-01-01T10:00:00Z'}
-            ]
-        }
-         # Mock responses for the *target* portfolio creation
-        self.mock_api_client.create_portfolio.return_value = {'id': PORTFOLIO_ID}
-        self.mock_api_client.create_cash_account.return_value = {'cash_account': {'id': CASH_ACC_GBP_ID}} # Expect GBP account to be created
-        self.mock_api_client.get_payouts.return_value = {'payouts': []}
-        self.mock_api_client.get_portfolio_holdings.return_value = {'holdings': []}
-        self.mock_api_client.get_custom_investments.return_value = {'custom_investments': []}
-
-        # No CSV data needed, only generating opening balances
-        csv_data = """unique_identifier,transaction_type,transaction_date,symbol,market,quantity,price_in_instrument_currency,amount,amount_currency,cash_account,description,amount_in_gbp
-cash-account-template,DEPOSIT,2000-01-01,,,,,0,GBP,Source GBP Acc,Filtered cash-account template,
+    def test_frozen_opening_balances_are_imported_before_same_date_transactions(self):
+        csv_data = """unique_identifier,transaction_type,transaction_date,symbol,market,quantity,price_in_instrument_currency,amount,amount_currency,cash_account,description,instrument_currency,exchange_rate_gbp,amount_in_instrument_currency,skip_cash_account_transaction
+ordinary,BUY,2023-01-01,VUSA,LSE,1,51,,,,ordinary,GBP,1,51,true
 """
-        exchange_rates_csv_data = """date,GBP/GBP,AUD/GBP
-2023-01-01,1,0.55
+        opening_csv = """unique_identifier,transaction_type,transaction_date,symbol,market,quantity,price_in_instrument_currency,amount,amount_currency,cash_account,description,instrument_currency,exchange_rate_gbp,amount_in_instrument_currency,skip_cash_account_transaction
+GENERATED-HOLDING-VUSA,BUY,2023-01-01,VUSA,LSE,100,50,,,,Opening,GBP,1,5000,true
+GENERATED-CASH-GBP-Source GBP Acc,DEPOSIT,2023-01-01,,,,,1000,GBP,Source GBP Acc,Opening Balance,,,,
 """
-
-        self.mock_api_client.get_holding.return_value = {
-            'holding': {'instrument': {'currency_code': 'GBP'}}
-        }
         self._run_import(
             csv_data,
-            opening_balance_on=opening_date,
-            opening_balance_from=opening_portfolio_name,
-            exchange_rates_csv_data=exchange_rates_csv_data
+            opening_balances_csv_data=opening_csv,
         )
-
-        # Assertions
-        self.mock_api_client.get_portfolios.assert_has_calls([
-            call(), # Called once to find source portfolio
-            call()  # Called again to check target portfolio existence
-        ])
-        self.mock_api_client.get_valuation_on.assert_called_once_with(opening_portfolio_id, "2022-12-31")
-        self.mock_api_client.get_cash_account_transactions.assert_called_once_with(111, "2000-01-01", "2022-12-31")
-        self.mock_api_client.create_portfolio.assert_called_once() # Target portfolio created
-        # Should create GBP cash account in target based on generated opening balance
-        self.mock_api_client.create_cash_account.assert_called_once_with(PORTFOLIO_ID, {"name": "Source GBP Acc (GBP)", "currency": "GBP"})
-
-        # Check that trades/cash corresponding to opening balances were created in the target
-        self.assertEqual(self.mock_api_client.try_create_trade.call_count, 2) # VUSA + MYFUND
-        self.assertEqual(self.mock_api_client.try_create_cash_transaction.call_count, 1) # GBP Account
-
-        trade_calls = self.mock_api_client.try_create_trade.call_args_list
-        trade_args_list = [c[0][0] for c in trade_calls] # Extract the 'api_request_data' dict
-
-        # Check VUSA Opening Balance Trade
-        vusa_trade = next(t for t in trade_args_list if t['symbol'] == 'VUSA')
-        self.assertEqual(vusa_trade['transaction_type'], 'BUY')
-        self.assertEqual(vusa_trade['transaction_date'], opening_date.strftime("%Y-%m-%d"))
-        self.assertEqual(vusa_trade['quantity'], 100.0)
-        self.assertEqual(vusa_trade['price'], 50.0)
-        self.assertEqual(vusa_trade['portfolio_id'], PORTFOLIO_ID)
-
-        # Custom symbols are cleaned from the source ID and qualified for the target portfolio.
-        myfund_trade = next(t for t in trade_args_list if t['symbol'] == f'MYFUND-{PORTFOLIO_ID}')
-        self.assertEqual(myfund_trade['transaction_type'], 'BUY')
-        self.assertEqual(myfund_trade['market'], 'OTHER') # Market remains OTHER
-        self.assertEqual(myfund_trade['transaction_date'], opening_date.strftime("%Y-%m-%d"))
-        self.assertEqual(myfund_trade['quantity'], 50.0)
-        self.assertEqual(myfund_trade['price'], 10.0)
-        self.assertEqual(myfund_trade['portfolio_id'], PORTFOLIO_ID)
-
-        # Check Cash Opening Balance (DEPOSIT)
-        cash_call_args = self.mock_api_client.try_create_cash_transaction.call_args[0][1]
-        self.assertEqual(cash_call_args['type_name'], 'DEPOSIT')
-        self.assertEqual(cash_call_args['date_time'], opening_date.strftime("%Y-%m-%d"))
-        self.assertEqual(cash_call_args['amount'], 1000.0) # Calculated total_amount
-        self.assertIn('Opening Balance', cash_call_args['description'])
-        # Cash transaction called with target cash account ID
-        self.assertEqual(self.mock_api_client.try_create_cash_transaction.call_args[0][0], CASH_ACC_GBP_ID)
+        self.assertEqual(self.mock_api_client.try_create_trade.call_count, 2)
+        trade_ids = [item.args[0]["unique_identifier"] for item in self.mock_api_client.try_create_trade.call_args_list]
+        self.assertEqual(trade_ids, ["GENERATED-HOLDING-VUSA", "ordinary"])
+        cash_calls = self.mock_api_client.try_create_cash_transaction.call_args_list
+        self.assertEqual(len(cash_calls), 1)
+        self.assertEqual(cash_calls[0].args[1]["foreign_identifier"], "GENERATED-CASH-GBP-Source GBP Acc")
+        self.mock_api_client.get_valuation_on.assert_not_called()
 
 
     def test_date_filtering(self):

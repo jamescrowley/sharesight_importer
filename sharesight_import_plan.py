@@ -90,7 +90,7 @@ def _expand_row(row):
 
     policy = TRANSACTION_POLICIES[transaction_type]
     operations = [policy.operation_type(row.line_number, data)]
-    if policy.creates_cash_transaction and not data.get(SKIP_CASH_TRANSACTION_FLAG):
+    if policy.creates_cash_transaction and not _is_true(data.get(SKIP_CASH_TRANSACTION_FLAG)):
         operations.append(PlannedCash(row.line_number, data))
 
     accrued_income = float(data.get("accrued_income") or 0)
@@ -102,6 +102,10 @@ def _expand_row(row):
             PlannedCash(row.line_number, accrued_data),
         ])
     return operations
+
+
+def _is_true(value):
+    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
 
 
 def _accrued_income_data(data):

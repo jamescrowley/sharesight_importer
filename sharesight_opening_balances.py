@@ -1,143 +1,223 @@
 import csv
 import datetime
+import os
 import sys
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
+from sharesight_csv_input import TRANSACTION_CSV_FIELDS
+from sharesight_custom_instruments import AUTO_NAME_SUFFIX, remove_portfolio_qualifier
 from sharesight_import_plan import SKIP_CASH_TRANSACTION_FLAG
 
 
-class OpeningBalanceGenerator:
+class OpeningBalanceExporter:
     def __init__(self, api_client):
         self._api_client = api_client
 
-    def generate(self, source_portfolio_id, source_currency, valuation_date,
-                 exchange_rates_file_path):
+    def export(self, source_portfolio_name, valuation_date, exchange_rates_file_path,
+               output_file_path, overwrite=False):
+        output_path = Path(output_file_path)
+        if output_path.exists() and not overwrite:
+            raise FileExistsError(
+                f"Opening-balance output already exists: {output_path}. Use --overwrite to replace it"
+            )
+        portfolio = self._find_portfolio(source_portfolio_name)
+        rows = self.generate(
+            portfolio["id"], portfolio["name"], portfolio["currency_code"],
+            valuation_date, exchange_rates_file_path,
+        )
+        mode = "w" if overwrite else "x"
+        with output_path.open(mode, encoding="utf-8", newline="") as output_file:
+            writer = csv.DictWriter(output_file, fieldnames=TRANSACTION_CSV_FIELDS)
+            writer.writeheader()
+            writer.writerows(rows)
+        return rows
+
+    def generate(self, source_portfolio_id, source_portfolio_name, source_currency,
+                 valuation_date, exchange_rates_file_path):
         last_balance_date = valuation_date - datetime.timedelta(days=1)
         valuation = self._api_client.get_valuation_on(
-            source_portfolio_id, last_balance_date.strftime("%Y-%m-%d")
+            source_portfolio_id, last_balance_date.isoformat()
         )
-        exchange_rates = load_exchange_rates(exchange_rates_file_path, valuation_date)
-        print(
-            f"Loaded valuation for {source_portfolio_id} on {valuation_date} "
-            f"with exchange rates {exchange_rates}"
+        rates, selected_rate_date = load_exchange_rates(
+            exchange_rates_file_path, valuation_date
         )
-
+        custom_instruments = {
+            item.get("code"): item
+            for item in self._api_client.get_custom_investments(source_portfolio_id).get(
+                "custom_investments", []
+            )
+        }
+        audit = {
+            "opening_balance_source_portfolio": source_portfolio_name,
+            "opening_balance_source_currency": source_currency,
+            "opening_balance_valuation_date": valuation_date.isoformat(),
+            "opening_balance_exchange_rate_date": selected_rate_date.isoformat(),
+        }
         rows = [
             self._holding_row(
-                holding,
-                source_portfolio_id,
-                source_currency,
-                valuation_date,
-                exchange_rates,
+                holding, source_portfolio_id, source_currency, valuation_date,
+                rates, custom_instruments, audit,
             )
             for holding in valuation.get("holdings", [])
         ]
         rows.extend(
             self._cash_row(
-                cash_account,
-                source_currency,
-                valuation_date,
-                last_balance_date,
-                exchange_rates,
+                account, source_currency, valuation_date, last_balance_date, rates, audit
             )
-            for cash_account in valuation.get("cash_accounts", [])
+            for account in valuation.get("cash_accounts", [])
         )
         return rows
 
     def _holding_row(self, holding, source_portfolio_id, source_currency,
-                     valuation_date, exchange_rates):
-        instrument_currency = self._holding_currency(holding["id"])
-        print(holding)
-        print(
-            f"Creating deemed aquisition using holding {holding.get('symbol')} in "
-            f"{instrument_currency} with value {holding.get('value')} from portfolio "
-            f"with currency {source_currency}"
+                     valuation_date, rates, custom_instruments, audit):
+        instrument = self._api_client.get_holding(holding["id"])["holding"]["instrument"]
+        instrument_currency = instrument["currency_code"]
+        source_value = _decimal(holding["value"], "holding value")
+        quantity = _decimal(holding["quantity"], "holding quantity")
+        if quantity == 0:
+            raise ValueError(f"Holding {holding.get('symbol')} has zero quantity")
+        source_to_instrument = _rate(rates, source_currency, instrument_currency)
+        amount_in_instrument = source_value * source_to_instrument
+        amount_in_aud = _convert_from_instrument(
+            amount_in_instrument, rates, "AUD", instrument_currency
         )
-        source_exchange_rate = float(
-            exchange_rates[f"{source_currency}/{instrument_currency}"]
+        amount_in_gbp = _convert_from_instrument(
+            amount_in_instrument, rates, "GBP", instrument_currency
         )
-        value = float(holding["value"])
-        quantity = float(holding["quantity"])
-        return {
-            SKIP_CASH_TRANSACTION_FLAG: True,
-            "unique_identifier": f"GENERATED-{holding['symbol']}",
-            "transaction_type": "BUY",
-            "transaction_date": valuation_date.strftime("%Y-%m-%d"),
-            "symbol": remove_portfolio_qualifier(holding["symbol"], source_portfolio_id),
-            "instrument_currency": instrument_currency,
-            "market": holding["market"],
-            "quantity": holding["quantity"],
-            "brokerage_in_amount_currency": 0,
-            "exchange_rate_aud": float(exchange_rates[f"AUD/{instrument_currency}"]),
-            "exchange_rate_gbp": float(exchange_rates[f"GBP/{instrument_currency}"]),
-            "price_in_instrument_currency": value / quantity * source_exchange_rate,
-            "amount_in_instrument_currency": value * source_exchange_rate,
-            "description": "Deemed aquisition at residency commencement",
-        }
+        _validate_cross_rate(source_value, amount_in_aud, rates, source_currency, "AUD")
+        _validate_cross_rate(source_value, amount_in_gbp, rates, source_currency, "GBP")
 
-    def _cash_row(self, cash_account, source_currency, valuation_date,
-                  last_balance_date, exchange_rates):
+        row = {
+            **audit,
+            SKIP_CASH_TRANSACTION_FLAG: "true",
+            "unique_identifier": f"GENERATED-HOLDING-{holding['symbol']}",
+            "transaction_type": "BUY",
+            "transaction_date": valuation_date.isoformat(),
+            "symbol": remove_portfolio_qualifier(holding["symbol"], source_portfolio_id),
+            "market": holding["market"],
+            "quantity": _plain(quantity),
+            "instrument_currency": instrument_currency,
+            "brokerage_in_instrument_currency": "0",
+            "exchange_rate_aud": _plain(_rate(rates, "AUD", instrument_currency)),
+            "exchange_rate_gbp": _plain(_rate(rates, "GBP", instrument_currency)),
+            "price_in_instrument_currency": _plain(amount_in_instrument / quantity),
+            "amount_in_instrument_currency": _plain(amount_in_instrument),
+            "amount_in_aud": _plain(amount_in_aud),
+            "amount_in_gbp": _plain(amount_in_gbp),
+            "opening_balance_source_value": _plain(source_value),
+            "description": "Deemed acquisition at residency commencement",
+        }
+        if holding["market"].lower() == "other":
+            custom = custom_instruments.get(holding["symbol"], {})
+            row.update({
+                "symbol_name": str(custom.get("name", "")).removesuffix(
+                    f" {AUTO_NAME_SUFFIX}"
+                ),
+                "instrument_country_code": custom.get("country_code", ""),
+                "symbol_type": custom.get("investment_type", ""),
+            })
+        return row
+
+    def _cash_row(self, account, source_currency, valuation_date,
+                  last_balance_date, rates, audit):
         transactions = self._api_client.get_cash_account_transactions(
-            cash_account["cash_account_id"],
-            "2000-01-01",
-            last_balance_date.strftime("%Y-%m-%d"),
-        )["cash_account_transactions"]
-        total_amount = sum(float(transaction["amount"]) for transaction in transactions)
-        last_balance = transactions[0]["balance"]
-        account_currency = cash_account["currency_code"]
-        exchange_rate = (
-            float(exchange_rates[f"{source_currency}/{account_currency}"])
-            if source_currency != account_currency else 1
-        )
-        account_name = normalize_cash_account_name(cash_account["name"], account_currency)
-        calculated_total = float(cash_account["value"]) * exchange_rate
-        if round(calculated_total, 2) != round(total_amount, 2):
-            print(
-                f"WARN Calculated total amount {calculated_total} does not match total amount "
-                f"{total_amount} for {account_name}. Sharesight valuation reports will show "
-                "the calculated total, which does not match the balances shown in the cash "
-                "account itself."
+            account["cash_account_id"], "2000-01-01", last_balance_date.isoformat()
+        ).get("cash_account_transactions", [])
+        total = sum((_decimal(item["amount"], "cash transaction amount") for item in transactions), Decimal())
+        account_currency = account["currency_code"]
+        source_value = _decimal(account["value"], "cash account value")
+        expected_total = source_value * _rate(rates, source_currency, account_currency)
+        if _cents(expected_total) != _cents(total):
+            _warn(
+                f"Cash account {account['name']} transactions total {total} does not match "
+                f"source valuation {expected_total}"
             )
-        if round(total_amount, 2) != round(float(last_balance), 2):
-            print(
-                f"ERROR Total amount {total_amount} does not match last balance {last_balance} "
-                f"for {account_name}. This should not happen!",
-                file=sys.stderr,
+        if transactions and _cents(total) != _cents(_decimal(transactions[0]["balance"], "cash balance")):
+            raise ValueError(
+                f"Cash account {account['name']} transaction total does not match its latest balance"
             )
+        account_name = normalize_cash_account_name(account["name"], account_currency)
         return {
-            "unique_identifier": f"GENERATED-{account_currency}-{account_name}",
+            **audit,
+            "unique_identifier": f"GENERATED-CASH-{account_currency}-{account_name}",
             "transaction_type": "DEPOSIT",
-            "transaction_date": valuation_date.strftime("%Y-%m-%d"),
-            "amount": total_amount,
+            "transaction_date": valuation_date.isoformat(),
+            "amount": _plain(total),
             "amount_currency": account_currency,
             "cash_account": account_name,
             "description": "Opening Balance",
+            "opening_balance_source_value": _plain(source_value),
+            "amount_in_aud": _plain(_convert_from_instrument(total, rates, "AUD", account_currency)),
+            "amount_in_gbp": _plain(_convert_from_instrument(total, rates, "GBP", account_currency)),
         }
 
-    def _holding_currency(self, holding_id):
-        holding = self._api_client.get_holding(holding_id)
-        return holding["holding"]["instrument"]["currency_code"]
+    def _find_portfolio(self, name):
+        portfolios = self._api_client.get_portfolios().get("portfolios", [])
+        portfolio = next((item for item in portfolios if item["name"] == name), None)
+        if portfolio is None:
+            raise ValueError(f"Source portfolio not found: {name}")
+        return portfolio
 
 
-def load_exchange_rates(exchange_rates_file_path, requested_date):
-    with open(exchange_rates_file_path, mode="r", encoding="utf-8-sig") as file:
-        exchange_rates = {row["date"]: row for row in csv.DictReader(file)}
-
-    permitted_days_prior = 3
-    for days_prior in range(permitted_days_prior + 1):
-        lookup_date = (requested_date - datetime.timedelta(days=days_prior)).strftime("%Y-%m-%d")
-        if lookup_date in exchange_rates:
-            return exchange_rates[lookup_date]
-        if days_prior < permitted_days_prior:
-            print(f"Looking for exchange rates for {lookup_date} as {requested_date} not found")
+def load_exchange_rates(file_path, requested_date):
+    with open(file_path, mode="r", encoding="utf-8-sig") as file:
+        rows = {row["date"]: row for row in csv.DictReader(file)}
+    for days_prior in range(4):
+        selected = requested_date - datetime.timedelta(days=days_prior)
+        if selected.isoformat() in rows:
+            return rows[selected.isoformat()], selected
     raise ValueError(
-        f"No exchange rates found for date {requested_date} or {permitted_days_prior} days "
-        "prior. Please ensure the exchange rates file contains rates for this date."
+        f"No exchange rates found for {requested_date} or the three preceding days"
     )
 
 
-def remove_portfolio_qualifier(symbol, portfolio_id):
-    suffix = f"-{portfolio_id}"
-    return symbol[:-len(suffix)] if symbol.endswith(suffix) else symbol
+def _rate(rates, base, quote):
+    if base == quote:
+        return Decimal(1)
+    key = f"{base}/{quote}"
+    if not rates.get(key):
+        raise ValueError(f"Missing exchange rate {key}")
+    return _decimal(rates[key], f"exchange rate {key}")
+
+
+def _convert_from_instrument(value, rates, target_currency, instrument_currency):
+    return value / _rate(rates, target_currency, instrument_currency)
+
+
+def _validate_cross_rate(source_value, converted_value, rates, source_currency, target_currency):
+    if source_currency == target_currency:
+        direct_value = source_value
+    else:
+        direct_value = source_value * _rate(rates, source_currency, target_currency)
+    if _cents(direct_value) != _cents(converted_value):
+        raise ValueError(
+            f"Exchange rates disagree converting {source_currency} to {target_currency}: "
+            f"direct value {direct_value}, instrument-mediated value {converted_value}"
+        )
+
+
+def _decimal(value, label):
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError) as error:
+        raise ValueError(f"Invalid {label}: {value!r}") from error
+
+
+def _cents(value):
+    return value.quantize(Decimal("0.01"))
+
+
+def _plain(value):
+    return format(value, "f")
+
+
+def _warn(message, stream=None):
+    stream = stream or sys.stderr
+    text = f"WARNING: {message}"
+    if stream.isatty() and "NO_COLOR" not in os.environ:
+        text = f"\033[33m{text}\033[0m"
+    print(text, file=stream)
 
 
 def normalize_cash_account_name(name, currency):

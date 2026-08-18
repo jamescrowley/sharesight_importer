@@ -1,46 +1,62 @@
+import argparse
 import datetime
 from os import getenv
-import argparse
+
 from sharesight_api_client import SharesightApiClient
 from sharesight_csv_importer import SharesightCsvImporter
-from sharesight_import_options import ImportOptions, OpeningBalanceOptions
+from sharesight_import_options import ImportOptions
+from sharesight_opening_balances import OpeningBalanceExporter
 
-def main():
-    parser = argparse.ArgumentParser(description='Process some integers.')
-    parser.add_argument('--client_id', default=getenv('SHARESIGHT_CLIENT_ID'), type=str, required=False, help=argparse.SUPPRESS)
-    parser.add_argument('--client_secret', default=getenv('SHARESIGHT_CLIENT_SECRET'), type=str, required=False, help=argparse.SUPPRESS)
-    parser.add_argument('-p', '--portfolio_name', type=str, required=True, help='The portfolio name')
-    parser.add_argument('-f', '--file_name', type=str, required=True, help='The file name')
-    parser.add_argument('-pf', '--prices_file_name', type=str, required=False, help='The prices file name')
-    parser.add_argument('-c', '--country_code', type=str, required=True, help='The country code (GB/AU)')
-    parser.add_argument('-r', '--delete_existing', type=bool, action=argparse.BooleanOptionalAction, help='Remove the portfolio')
-    parser.add_argument('-d', '--min_date', type=lambda s: datetime.datetime.strptime(s, '%Y-%m-%d').date(), help='Min date to import')
-    parser.add_argument('-n', '--min_line', type=int, help='Line number to start at')
-    parser.add_argument('-e', '--exclude_exdate_transactions_before_min_date', type=bool, action=argparse.BooleanOptionalAction, help='Exclude exdate transactions before min date')
-    parser.add_argument('-x', '--max_line', type=int, help='Line number to finish at')
-    parser.add_argument('-v', '--verbose', type=bool, action=argparse.BooleanOptionalAction, help='Output curl requests')
-    
-    opening_balance_group = parser.add_argument_group('opening balance options')
-    opening_balance_group.add_argument('-ob', '--opening_balance_on', type=lambda s: datetime.datetime.strptime(s, '%Y-%m-%d').date(), help='Generate opening balances on this date')
-    opening_balance_group.add_argument('-obf', '--opening_balance_from', type=str, required=False, help='The portfolio to calculate opening balances from')
-    opening_balance_group.add_argument('-ef', '--exchange_rates_file_name', type=str, required=False, help='The exchange rates file name')
 
-    args = parser.parse_args()
-    
-    ob_args = [args.opening_balance_on, args.opening_balance_from, args.exchange_rates_file_name]
-    if any(ob_args) and not all(ob_args):
-        parser.error("opening balance options must be used together")
-    print(f"{args}")
-    api_client = SharesightApiClient(args.client_id, args.client_secret, args.verbose)
-    csv_importer = SharesightCsvImporter(api_client)
-    opening_balance = (
-        OpeningBalanceOptions(
-            valuation_date=args.opening_balance_on,
-            source_portfolio_name=args.opening_balance_from,
-            exchange_rates_file_path=args.exchange_rates_file_name,
-        )
-        if args.opening_balance_on else None
+def _date(value):
+    return datetime.datetime.strptime(value, "%Y-%m-%d").date()
+
+
+def build_parser():
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--client-id", default=getenv("SHARESIGHT_CLIENT_ID"), help=argparse.SUPPRESS)
+    common.add_argument("--client-secret", default=getenv("SHARESIGHT_CLIENT_SECRET"), help=argparse.SUPPRESS)
+    common.add_argument("-v", "--verbose", action=argparse.BooleanOptionalAction)
+
+    parser = argparse.ArgumentParser(description="Import transactions into Sharesight")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    import_parser = commands.add_parser("import", parents=[common])
+    import_parser.add_argument("-p", "--portfolio-name", required=True)
+    import_parser.add_argument("-f", "--file-name", required=True)
+    import_parser.add_argument("-pf", "--prices-file-name")
+    import_parser.add_argument("-obf", "--opening-balances-file-name")
+    import_parser.add_argument("-c", "--country-code", choices=("AU", "GB"), required=True)
+    import_parser.add_argument("-r", "--delete-existing", action=argparse.BooleanOptionalAction)
+    import_parser.add_argument("-d", "--min-date", type=_date)
+    import_parser.add_argument("-n", "--min-line", type=int)
+    import_parser.add_argument(
+        "-e", "--exclude-exdate-transactions-before-min-date",
+        action=argparse.BooleanOptionalAction,
     )
+    import_parser.add_argument("-x", "--max-line", type=int)
+
+    export_parser = commands.add_parser("export-opening-balances", parents=[common])
+    export_parser.add_argument("--source-portfolio-name", required=True)
+    export_parser.add_argument("--valuation-date", type=_date, required=True)
+    export_parser.add_argument("--exchange-rates-file-name", required=True)
+    export_parser.add_argument("--output-file", required=True)
+    export_parser.add_argument("--overwrite", action="store_true")
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    api_client = SharesightApiClient(args.client_id, args.client_secret, args.verbose)
+    if args.command == "export-opening-balances":
+        return OpeningBalanceExporter(api_client).export(
+            args.source_portfolio_name,
+            args.valuation_date,
+            args.exchange_rates_file_name,
+            args.output_file,
+            args.overwrite,
+        )
+
     options = ImportOptions(
         delete_existing=args.delete_existing,
         min_date=args.min_date,
@@ -50,9 +66,12 @@ def main():
         min_line=args.min_line,
         max_line=args.max_line,
         prices_file_path=args.prices_file_name,
-        opening_balance=opening_balance,
+        opening_balances_file_path=args.opening_balances_file_name,
     )
-    csv_importer.import_file(
+    return SharesightCsvImporter(api_client).import_file(
         args.file_name, args.portfolio_name, args.country_code, options
     )
-main()
+
+
+if __name__ == "__main__":
+    main()

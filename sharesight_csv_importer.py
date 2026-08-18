@@ -1,7 +1,12 @@
 import sys
 
 from sharesight_api_client import SharesightApiClient
-from sharesight_csv_input import load_transactions, validate_transactions
+from sharesight_csv_input import (
+    load_frozen_opening_balances,
+    load_transactions,
+    validate_opening_boundary,
+    validate_transactions,
+)
 from sharesight_custom_instruments import CustomInstrumentSynchronizer
 from sharesight_import_executor import ImportExecutor
 from sharesight_import_options import ImportOptions
@@ -10,7 +15,7 @@ from sharesight_import_plan import (
     SUPPORTED_TRANSACTION_TYPES,
     build_import_plan,
 )
-from sharesight_opening_balances import OpeningBalanceGenerator, normalize_cash_account_name
+from sharesight_opening_balances import normalize_cash_account_name
 
 
 class SharesightCsvImporter:
@@ -31,9 +36,23 @@ class SharesightCsvImporter:
             )
             return None
 
-        if options.opening_balance:
-            opening_balances = self._generate_opening_balances(options.opening_balance)
-            min_date = options.opening_balance.valuation_date
+        if options.opening_balances_file_path:
+            opening_rows, opening_date = load_frozen_opening_balances(
+                options.opening_balances_file_path
+            )
+            if min_date is not None and min_date != opening_date:
+                raise ValueError(
+                    f"--min-date must equal opening-balance date {opening_date} when a "
+                    "frozen opening-balance file is supplied"
+                )
+            validate_opening_boundary(
+                file_path,
+                opening_rows,
+                opening_date,
+                options.exclude_exdate_transactions_before_min_date,
+            )
+            opening_balances = [row.data for row in opening_rows]
+            min_date = opening_date
 
         self._process_transactions(
             file_path,
@@ -43,24 +62,6 @@ class SharesightCsvImporter:
             min_date,
             opening_balances,
         )
-
-    def _generate_opening_balances(self, opening_options):
-        portfolio_id, _, portfolio_currency = self._get_portfolio_by_name(
-            opening_options.source_portfolio_name
-        )
-        print(
-            f"Generating opening balances on {opening_options.valuation_date} from "
-            f"{opening_options.source_portfolio_name}"
-        )
-        rows = OpeningBalanceGenerator(self._api_client).generate(
-            portfolio_id,
-            portfolio_currency,
-            opening_options.valuation_date,
-            opening_options.exchange_rates_file_path,
-        )
-        # Custom instrument prices must already agree between the two portfolios.
-        print("    " + "\n    ".join(str(row) for row in rows))
-        return rows
 
     def _process_transactions(
         self,

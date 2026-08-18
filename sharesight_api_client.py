@@ -1,8 +1,21 @@
 import json
-import os
 import time
+from dataclasses import dataclass
 import curlify
 import requests
+
+
+@dataclass(frozen=True)
+class ApiResult:
+    status_code: int
+    data: dict
+    errors: tuple[str, ...]
+    duplicate: bool
+    endpoint: str
+
+    @property
+    def successful(self):
+        return self.status_code == 200 and not self.errors
 
 class SharesightApiClient:
     
@@ -62,6 +75,38 @@ class SharesightApiClient:
             print(response.json())
         response.raise_for_status()
         return response
+
+    def _make_tolerant_request(self, method, url, json):
+        response = self._make_request_without_status_check(method, url, json=json)
+        return self._result_from_response(response)
+
+    @staticmethod
+    def _result_from_response(response):
+        try:
+            data = response.json()
+        except json.JSONDecodeError as error:
+            message = f"Error decoding JSON response: {error}, {response.text}"
+            data = {"error": message}
+            errors = (message,)
+        else:
+            errors = () if response.status_code == 200 else _extract_errors(data, response)
+
+        raw_errors = data.get("errors", {}) if isinstance(data, dict) else {}
+        duplicate = (
+            isinstance(raw_errors, dict)
+            and (
+                raw_errors.get("unique_identifier", [None])[0]
+                == "A trade with this unique_identifier already exists in the portfolio."
+                or raw_errors.get("foreign_identifier", [None])[0] == "has already been taken"
+            )
+        )
+        return ApiResult(
+            status_code=response.status_code,
+            data=data,
+            errors=errors,
+            duplicate=duplicate,
+            endpoint=response.url.replace("https://api.sharesight.com", ""),
+        )
 
     def delete_portfolio(self, portfolio_id):
         return self._make_request('delete', 
@@ -201,7 +246,7 @@ class SharesightApiClient:
         ).json()
     
     def try_create_holding_merge(self, portfolio_id, merge_data):
-        return self._make_request_without_status_check('post', 
+        return self._make_tolerant_request('post',
             f'{self.API_V2_BASE_URL}portfolios/{portfolio_id}/holding_merges.json', 
             json=merge_data
         )
@@ -222,19 +267,37 @@ class SharesightApiClient:
         ).json()
 
     def try_create_trade(self, trade_data):
-        return self._make_request_without_status_check('post', 
+        return self._make_tolerant_request('post',
             f'{self.API_V2_BASE_URL}trades.json', 
             json={"trade": trade_data}
         )
 
     def try_create_payout(self, payout_data):
-        return self._make_request_without_status_check('post',
+        return self._make_tolerant_request('post',
             f'{self.API_V2_BASE_URL}payouts.json',
             json={"payout": payout_data}
         )
 
     def try_create_cash_transaction(self, cash_account_id, cash_data):
-        return self._make_request_without_status_check('post', 
+        return self._make_tolerant_request('post',
             f'{self.API_V2_BASE_URL}cash_accounts/{cash_account_id}/cash_account_transactions.json', 
             json={"cash_account_transaction": cash_data}
         )
+
+
+def _extract_errors(data, response):
+    if isinstance(data, dict):
+        raw_errors = data.get("errors") or data.get("error")
+        if isinstance(raw_errors, dict):
+            return tuple(
+                str(message)
+                for messages in raw_errors.values()
+                for message in (messages if isinstance(messages, list) else [messages])
+            )
+        if isinstance(raw_errors, list):
+            return tuple(str(message) for message in raw_errors)
+        if raw_errors:
+            return (str(raw_errors),)
+    return (
+        f"Received unexpected response with status code {response.status_code}: {response.text}",
+    )

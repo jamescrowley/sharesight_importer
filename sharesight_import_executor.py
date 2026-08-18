@@ -1,4 +1,3 @@
-import json
 import sys
 
 from sharesight_import_plan import PlannedCash, PlannedMerge, PlannedPayout, PlannedTrade
@@ -8,6 +7,7 @@ from sharesight_payloads import (
     build_payout_payload,
     build_trade_payload,
 )
+from sharesight_trade_validation import validate_trade
 
 
 def qualify_custom_instrument_symbol(data_row, portfolio_id):
@@ -77,7 +77,7 @@ class ImportExecutor:
 
         payload = build_merge_payload(holding_id, buy_data)
         response = self._api_client.try_create_holding_merge(self._portfolio_id, payload)
-        self._print_response_status(log_prefix, payload, response)
+        self._print_result(log_prefix, payload, response)
         return True
 
     def _execute_operation(self, operation):
@@ -132,57 +132,22 @@ class ImportExecutor:
             )
         payload = build_trade_payload(self._portfolio_id, self._country_code, data)
         response = self._api_client.try_create_trade(payload)
-        errors, response_json = self._get_errors(response)
-        self._print_response_status(log_prefix, payload, response)
-        response_data = response_json.get("trade")
+        self._print_result(log_prefix, payload, response)
+        response_data = response.data.get("trade")
         holding_id = response_data.get("holding_id") if response_data else None
         if not holding_id:
-            reason = "but no error" if not errors else "due to error"
+            reason = "but no error" if not response.errors else "due to error"
             print(
                 f"{log_prefix}\t{response.status_code} Couldn't find holding id {reason} - "
-                f"{response_json} - skipping instrument currency check and validation"
+                f"{response.data} - skipping instrument currency check and validation"
             )
             return None
 
-        self._validate_trade_response(log_prefix, data, holding_id, response_data)
-        return holding_id
-
-    def _validate_trade_response(self, log_prefix, data, holding_id, response_data):
         holding = self._api_client.get_holding(holding_id)
         holding_currency = holding["holding"]["instrument"]["currency_code"]
-        if holding_currency != data.get("instrument_currency"):
-            print(
-                f"{log_prefix}\tERROR {data.get('symbol')} has instrument currency code "
-                f"{data.get('instrument_currency')} but Sharesight has set it to {holding_currency}"
-            )
-        if response_data["transaction_type"] not in {"BUY", "SELL"}:
-            return
-
-        gross_in_instrument_currency = float(response_data["price"]) * float(response_data["quantity"])
-        gross_in_portfolio_currency = gross_in_instrument_currency / float(response_data["exchange_rate"])
-        brokerage_sign = 1 if response_data["transaction_type"] == "BUY" else -1
-        brokerage_in_instrument_currency = float(response_data["brokerage"]) * brokerage_sign
-        brokerage_in_portfolio_currency = brokerage_in_instrument_currency / float(response_data["exchange_rate"])
-        net_in_portfolio_currency = round(
-            gross_in_portfolio_currency + brokerage_in_portfolio_currency, 2
-        )
-        if abs(net_in_portfolio_currency) != abs(float(response_data["value"])):
-            print(
-                f"{log_prefix}\tWARN Sharesight net amount in portfolio currency "
-                f"{net_in_portfolio_currency} does not match value {response_data.get('value')} "
-                f"for {data.get('symbol')}: {response_data}"
-            )
-        net_in_instrument_currency = round(
-            gross_in_instrument_currency + brokerage_in_instrument_currency, 2
-        )
-        accrued_income = float(data.get("accrued_income_in_instrument_currency") or 0)
-        expected_amount = abs(round(float(data.get("amount_in_instrument_currency")) - accrued_income, 2))
-        if net_in_instrument_currency != expected_amount:
-            print(
-                f"{log_prefix}\tWARN Sharesight net amount in instrument currency "
-                f"{net_in_instrument_currency} does not match amount in instrument currency "
-                f"{expected_amount} for {data.get('symbol')}: {response_data}"
-            )
+        for message in validate_trade(data, response_data, holding_currency):
+            print(f"{log_prefix}\t{message}")
+        return holding_id
 
     def _create_payout(self, log_prefix, data, holding_id):
         payout_key = self._payout_lookup_key(holding_id, data.get("transaction_date"))
@@ -193,7 +158,7 @@ class ImportExecutor:
             self._portfolio_id, holding_id, self._country_code, data
         )
         response = self._api_client.try_create_payout(payload)
-        self._print_response_status(log_prefix, payload, response)
+        self._print_result(log_prefix, payload, response)
 
     def _create_cash(self, cash_account_id, log_prefix, data):
         if cash_account_id is None:
@@ -202,51 +167,22 @@ class ImportExecutor:
             )
         payload = build_cash_payload(data)
         response = self._api_client.try_create_cash_transaction(cash_account_id, payload)
-        self._print_response_status(log_prefix, payload, response)
+        self._print_result(log_prefix, payload, response)
 
     def _payout_lookup_key(self, holding_id, paid_on):
         return f"{self._portfolio_id}-{holding_id}-{paid_on}".lower()
 
     @staticmethod
-    def _get_errors(response):
-        try:
-            response_json = response.json()
-            if response.status_code == 200:
-                return [], response_json
-            errors = response_json.get("errors") or [response_json.get("error")]
-            if not any(errors):
-                errors = [
-                    f"Received unexpected response with status code {response.status_code}: "
-                    f"{response.text}"
-                ]
-            return errors, response_json
-        except json.decoder.JSONDecodeError as error:
-            return [], {"error": f"Error decoding JSON response: {error}, {response.text}"}
-
-    def _print_response_status(self, log_prefix, payload, response):
-        errors, response_json = self._get_errors(response)
-        response_url = response.url.replace("https://api.sharesight.com", "")
-        if not errors:
-            print(f"{log_prefix}\t{response.status_code} Success {response_url}")
-            return []
-
-        duplicate_trade = (
-            isinstance(errors, dict)
-            and errors.get("unique_identifier", [None])[0]
-            == "A trade with this unique_identifier already exists in the portfolio."
-        )
-        duplicate_cash = (
-            isinstance(errors, dict)
-            and errors.get("foreign_identifier", [None])[0] == "has already been taken"
-        )
-        if duplicate_trade or duplicate_cash:
+    def _print_result(log_prefix, payload, result):
+        if result.successful:
+            print(f"{log_prefix}\t{result.status_code} Success {result.endpoint}")
+        elif result.duplicate:
             print(
-                f"{log_prefix}\t{response.status_code} Skipped (duplicate): "
-                f"{response_json} {payload} {response_url}"
+                f"{log_prefix}\t{result.status_code} Skipped (duplicate): "
+                f"{result.data} {payload} {result.endpoint}"
             )
         else:
             print(
-                f"{log_prefix}\t{response.status_code} {response_json} {payload} {response_url}",
+                f"{log_prefix}\t{result.status_code} {result.data} {payload} {result.endpoint}",
                 file=sys.stderr,
             )
-        return errors

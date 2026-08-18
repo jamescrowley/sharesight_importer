@@ -1,5 +1,6 @@
 import unittest
-from unittest.mock import call, patch
+import json
+from unittest.mock import MagicMock, call, patch
 
 import requests
 
@@ -23,7 +24,9 @@ class SharesightApiClientContractTests(unittest.TestCase):
 
         response = client.try_create_trade({"unique_identifier": "synthetic-1"})
 
-        self.assertEqual(response.json(), {"trade": {"id": 9}})
+        self.assertEqual(response.data, {"trade": {"id": 9}})
+        self.assertTrue(response.successful)
+        self.assertEqual(response.endpoint, "/api/v2/trades.json")
         self.assertEqual(request.call_args_list[0], call(
             "post",
             "https://api.sharesight.com/oauth2/token",
@@ -75,6 +78,47 @@ class SharesightApiClientContractTests(unittest.TestCase):
         ])
         response = client.try_create_trade({"unique_identifier": "duplicate"})
         self.assertEqual(response.status_code, 422)
+        self.assertFalse(response.successful)
+        self.assertEqual(response.errors, ("duplicate",))
+
+    def test_try_create_classifies_known_duplicate(self):
+        client, _ = self.make_client([
+            FakeResponse(200, {"access_token": "test-token"}),
+            FakeResponse(422, {"errors": {
+                "unique_identifier": [
+                    "A trade with this unique_identifier already exists in the portfolio."
+                ]
+            }}),
+        ])
+
+        result = client.try_create_trade({"unique_identifier": "duplicate"})
+
+        self.assertTrue(result.duplicate)
+        self.assertFalse(result.successful)
+
+    def test_try_create_normalizes_unstructured_error(self):
+        client, _ = self.make_client([
+            FakeResponse(200, {"access_token": "test-token"}),
+            FakeResponse(500, {"error": "synthetic failure"}),
+        ])
+
+        result = client.try_create_payout({})
+
+        self.assertEqual(result.errors, ("synthetic failure",))
+        self.assertFalse(result.duplicate)
+
+    def test_malformed_json_is_an_error_even_for_success_status(self):
+        response = MagicMock(
+            status_code=200,
+            text="not-json",
+            url="https://api.sharesight.com/api/v2/trades.json",
+        )
+        response.json.side_effect = json.JSONDecodeError("invalid", "not-json", 0)
+
+        result = SharesightApiClient._result_from_response(response)
+
+        self.assertFalse(result.successful)
+        self.assertIn("Error decoding JSON response", result.errors[0])
 
     def test_strict_methods_raise_for_http_errors(self):
         client, _ = self.make_client([

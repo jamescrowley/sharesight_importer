@@ -4,6 +4,7 @@ import datetime
 import tempfile
 from pathlib import Path
 from sharesight_csv_importer import SharesightCsvImporter
+from sharesight_api_client import ApiResult
 from sharesight_import_options import ImportOptions, OpeningBalanceOptions
 
 # Test Data Constants
@@ -17,6 +18,16 @@ HOLDING_ID_MSFT = 790
 HOLDING_ID_CUSTOM = 791
 CUSTOM_INST_ID = 999
 PRICE_ID = 1001
+
+
+def api_result(data=None, status_code=200, duplicate=False, endpoint="mock://create"):
+    return ApiResult(
+        status_code=status_code,
+        data=data or {},
+        errors=() if status_code == 200 else ("validation error",),
+        duplicate=duplicate,
+        endpoint=endpoint,
+    )
 
 class TestSharesightCsvImporter(unittest.TestCase):
 
@@ -34,21 +45,9 @@ class TestSharesightCsvImporter(unittest.TestCase):
         self.mock_api_client.get_custom_investment_prices.return_value = {'prices': []} # Default: no existing prices
 
         # Mock successful creation responses (can be refined)
-        self.mock_api_client.try_create_trade.return_value = MagicMock(
-            status_code=200,
-            url="mock://create_trade",
-            json=lambda: {'trade': {}}
-        )
-        self.mock_api_client.try_create_payout.return_value = MagicMock(
-            status_code=200,
-            url="mock://create_payout",
-            json=lambda: {'payout': {'id': 555}}
-        )
-        self.mock_api_client.try_create_cash_transaction.return_value = MagicMock(
-            status_code=200,
-            url="mock://create_cash",
-            json=lambda: {}
-        )
+        self.mock_api_client.try_create_trade.return_value = api_result({'trade': {}})
+        self.mock_api_client.try_create_payout.return_value = api_result({'payout': {'id': 555}})
+        self.mock_api_client.try_create_cash_transaction.return_value = api_result()
         self.mock_api_client.try_create_custom_investment.return_value = MagicMock(
             status_code=200,
             url="mock://create_custom_investment",
@@ -518,16 +517,16 @@ tx_dup,BUY,2023-01-15,AAPL,NASDAQ,10,150.0,1505.0,USD,My USD Account,Test Buy,5,
             'cash_accounts': [{'id': CASH_ACC_USD_ID, 'name': 'My USD Account (USD)', 'currency': 'USD'}]
         }
         # Simulate duplicate error for trade
-        self.mock_api_client.try_create_trade.return_value = MagicMock(
-            status_code=422, # Unprocessable Entity often used for validation errors
-            url="mock://create_trade_dup",
-            json=lambda: {'errors': {'unique_identifier': ["A trade with this unique_identifier already exists in the portfolio."]}}
+        self.mock_api_client.try_create_trade.return_value = api_result(
+            {'errors': {'unique_identifier': ["A trade with this unique_identifier already exists in the portfolio."]}},
+            status_code=422,
+            duplicate=True,
         )
         # Simulate duplicate error for cash as well (might happen if trade failed but cash didn't rollback)
-        self.mock_api_client.try_create_cash_transaction.return_value = MagicMock(
-             status_code=422,
-             url="mock://create_cash_dup",
-             json=lambda: {'errors': {'foreign_identifier': ["has already been taken"]}}
+        self.mock_api_client.try_create_cash_transaction.return_value = api_result(
+            {'errors': {'foreign_identifier': ["has already been taken"]}},
+            status_code=422,
+            duplicate=True,
         )
 
 
@@ -568,10 +567,10 @@ tx_div_dup,DIVIDEND,2023-02-20,MSFT,NASDAQ,,100.0,USD,My USD Account,MSFT Div Du
             'payouts': [{'id': 666, 'holding_id': HOLDING_ID_MSFT, 'paid_on': payout_date}]
         }
          # Simulate duplicate cash as well
-        self.mock_api_client.try_create_cash_transaction.return_value = MagicMock(
-             status_code=422,
-             url="mock://create_cash_dup",
-             json=lambda: {'errors': {'foreign_identifier': ["has already been taken"]}}
+        self.mock_api_client.try_create_cash_transaction.return_value = api_result(
+            {'errors': {'foreign_identifier': ["has already been taken"]}},
+            status_code=422,
+            duplicate=True,
         )
 
 
@@ -608,8 +607,8 @@ tx_bond_buy,BUY,2023-04-01,BNDX,NASDAQ,100,50.0,5015.0,USD,My USD Account,Bond B
             'cash_accounts': [{'id': CASH_ACC_USD_ID, 'name': 'My USD Account (USD)', 'currency': 'USD'}]
         }
         # Mock trade returns holding ID
-        self.mock_api_client.try_create_trade.return_value = MagicMock(
-            status_code=200, url="mock://trade", json=lambda: {'trade': {'holding_id': HOLDING_ID_AAPL, 'transaction_type': 'SPLIT'}}
+        self.mock_api_client.try_create_trade.return_value = api_result(
+            {'trade': {'holding_id': HOLDING_ID_AAPL, 'transaction_type': 'SPLIT'}}
         )
 
         self._run_import(csv_data)
@@ -667,8 +666,8 @@ tx_bond_sell,SELL,2023-05-01,BNDX,NASDAQ,50,51.0,2545.0,USD,My USD Account,Bond 
             'holdings': [{'id': HOLDING_ID_AAPL, 'instrument': {'code': 'BNDX', 'market_code': 'NASDAQ'}}] # Using AAPL ID just for test
         }
         # Mock trade returns holding ID
-        self.mock_api_client.try_create_trade.return_value = MagicMock(
-            status_code=200, url="mock://trade", json=lambda: {'trade': {'holding_id': HOLDING_ID_AAPL, 'transaction_type': 'SPLIT'}}
+        self.mock_api_client.try_create_trade.return_value = api_result(
+            {'trade': {'holding_id': HOLDING_ID_AAPL, 'transaction_type': 'SPLIT'}}
         )
         self.mock_api_client.get_payouts.return_value = {'payouts': []} # No existing payout
 

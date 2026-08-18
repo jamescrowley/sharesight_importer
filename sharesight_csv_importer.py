@@ -7,6 +7,12 @@ from typing import TextIO
 from sharesight_api_client import SharesightApiClient
 from sharesight_csv_input import iter_transaction_rows, load_transactions, validate_transactions
 from sharesight_import_plan import PlannedMerge, PlannedOperation, build_import_plan
+from sharesight_payloads import (
+    build_cash_payload,
+    build_merge_payload,
+    build_payout_payload,
+    build_trade_payload,
+)
 
 
 class SharesightCsvImporter:
@@ -398,14 +404,7 @@ class SharesightCsvImporter:
         return portfolio_id,cash_accounts
     
     def _process_merge(self, portfolio_id, existing_holding_id, log_line_prefix, data_row):
-        merge_data = {
-            "holding_id": existing_holding_id,
-            "merge_date": data_row.get("goes_ex_on") if data_row.get("goes_ex_on") else data_row.get("transaction_date"),
-            "quantity": float(data_row.get("quantity")),
-            "symbol": data_row.get("symbol"),
-            "market": data_row.get("market").upper(),
-            "comments": data_row.get("unique_identifier") + " " + data_row.get("description")
-        }
+        merge_data = build_merge_payload(existing_holding_id, data_row)
         response = self._api_client.try_create_holding_merge(portfolio_id, merge_data)
         self._print_response_status(log_line_prefix, merge_data, response)
 
@@ -455,31 +454,7 @@ class SharesightCsvImporter:
             return
         if (float(data_row.get("quantity")) < 0):
             print(f"{log_line_prefix}\tWARN Shorts are not supported by Sharesight. Quantity is negative: {data_row.get('quantity')}")
-        api_request_data = {
-            "unique_identifier": data_row.get("unique_identifier"),
-            "transaction_type": data_row.get("transaction_type"),
-            "transaction_date": (data_row.get("goes_ex_on") if data_row.get("goes_ex_on") != "" else data_row.get("transaction_date")) if is_capital_call_or_return else data_row.get("transaction_date"),
-            "portfolio_id": portfolio_id,
-            "symbol": data_row.get("symbol"),
-            "market": data_row.get("market"),
-            # NB: shorts are not supported
-            "quantity": data_row.get("quantity"),
-            # needs to be in instrument currency
-            "price": data_row.get("price_in_instrument_currency"),
-            # has to be in portfolio currency or instrument currency
-            # in order for sharesight to use the supplied exchange_rate
-            # "brokerage": data_row.get("brokerage_in_amount_currency"),
-            # "brokerage_currency": data_row.get("amount_currency"),
-            "brokerage": data_row.get("brokerage_in_instrument_currency"),
-            "brokerage_currency_code": data_row.get("instrument_currency"),
-            "exchange_rate": data_row.get("exchange_rate_gbp") if country_code == "GB" else data_row.get("exchange_rate_aud") if country_code=="AU" else "??",
-            # needs to be in portfolio currency
-            "cost_base": (data_row.get("amount_in_gbp") if country_code == "GB" else data_row.get("amount_in_aud") if country_code == "AU" else "??") if data_row.get("transaction_type") == "OPENING_BALANCE" else "",
-            # needs to be in instrument currency
-            "capital_return_value": abs(float(data_row.get("amount_in_instrument_currency"))) if is_capital_call_or_return else "",
-            "paid_on": data_row.get("transaction_date") if is_capital_call_or_return else "",
-            "comments": data_row.get("unique_identifier") + " " + data_row.get("description")
-        }
+        api_request_data = build_trade_payload(portfolio_id, country_code, data_row)
         response = self._api_client.try_create_trade(api_request_data)
         errors,response_json = self._get_errors(response)
         self._print_response_status(log_line_prefix, api_request_data, response)
@@ -515,19 +490,9 @@ class SharesightCsvImporter:
     def _process_payout(self, portfolio_id, country_code, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup):
         existing_payout = portfolio_payouts_lookup.get(self.get_portfolio_payouts_lookup_key(portfolio_id, existing_holding_id, data_row.get("transaction_date")))
         if (not existing_payout):
-            amount_in_portfolio_base_currency = data_row.get("amount_in_gbp") if country_code == "GB" else data_row.get("amount_in_aud") if country_code == "AU" else "??"
-            api_request_data = {
-                "portfolio_id": portfolio_id,
-                "holding_id": existing_holding_id,
-                "paid_on": data_row.get("transaction_date"),
-                "amount": data_row.get("amount"),
-                "goes_ex_on": data_row.get("goes_ex_on"),
-                "currency_code": data_row.get("amount_currency"),
-                # specifying exchange rate instead of banked_amount seems to break
-                # the income reports, so we're using banked_amount instead
-                "banked_amount": amount_in_portfolio_base_currency,
-                "comments": data_row.get("unique_identifier") + " " + data_row.get("description")
-            }
+            api_request_data = build_payout_payload(
+                portfolio_id, existing_holding_id, country_code, data_row
+            )
 
             response = self._api_client.try_create_payout(api_request_data)
             self._print_response_status(log_line_prefix, api_request_data, response)
@@ -539,14 +504,7 @@ class SharesightCsvImporter:
             raise ValueError(
                 f"Unable to find cash account {data_row.get('amount_currency')} {data_row.get('cash_account')}"
             )
-        amount_in_account_currency = float(data_row.get("amount")) - float(data_row.get("accrued_income") if data_row.get("accrued_income") else 0)
-        api_request_data = {
-            "date_time": data_row.get("transaction_date"),
-            "description": data_row.get("unique_identifier") + " " + data_row.get("description"),
-            "amount": amount_in_account_currency,
-            "type_name": data_row.get("transaction_type"),
-            "foreign_identifier": data_row.get("unique_identifier"),
-        }
+        api_request_data = build_cash_payload(data_row)
         response = self._api_client.try_create_cash_transaction(cash_account_id, api_request_data)
         self._print_response_status(log_line_prefix, api_request_data, response)
 

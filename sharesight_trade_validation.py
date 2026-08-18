@@ -1,10 +1,20 @@
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class TradeValidationIssue:
+    message: str
+    is_warning: bool
+
+
 def validate_trade(data, response_data, holding_currency):
     messages = []
     if holding_currency != data.get("instrument_currency"):
-        messages.append(
-            f"ERROR {data.get('symbol')} has instrument currency code "
-            f"{data.get('instrument_currency')} but Sharesight has set it to {holding_currency}"
-        )
+        messages.append(TradeValidationIssue(
+            f"{data.get('symbol')} has instrument currency code "
+            f"{data.get('instrument_currency')} but Sharesight has set it to {holding_currency}",
+            is_warning=False,
+        ))
     if response_data["transaction_type"] not in {"BUY", "SELL"}:
         return messages
 
@@ -20,11 +30,12 @@ def validate_trade(data, response_data, holding_currency):
         2,
     )
     if abs(net_in_portfolio_currency) != abs(float(response_data["value"])):
-        messages.append(
-            f"WARN Sharesight net amount in portfolio currency {net_in_portfolio_currency} "
+        messages.append(TradeValidationIssue(
+            f"Sharesight net amount in portfolio currency {net_in_portfolio_currency} "
             f"does not match value {response_data.get('value')} for {data.get('symbol')}: "
-            f"{response_data}"
-        )
+            f"{response_data}",
+            is_warning=True,
+        ))
 
     net_in_instrument_currency = round(
         gross_in_instrument_currency + brokerage_in_instrument_currency, 2
@@ -34,9 +45,10 @@ def validate_trade(data, response_data, holding_currency):
         round(float(data.get("amount_in_instrument_currency")) - accrued_income, 2)
     )
     if net_in_instrument_currency != expected_amount:
-        messages.append(
-            f"WARN Sharesight net amount in instrument currency {net_in_instrument_currency} "
+        messages.append(TradeValidationIssue(
+            f"Sharesight net amount in instrument currency {net_in_instrument_currency} "
             f"does not match amount in instrument currency {expected_amount} for "
-            f"{data.get('symbol')}: {response_data}"
-        )
+            f"{data.get('symbol')}: {response_data}",
+            is_warning=True,
+        ))
     return messages

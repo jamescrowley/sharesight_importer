@@ -1,5 +1,6 @@
 import sys
 
+from sharesight_console import error, warn
 from sharesight_custom_instruments import qualify_custom_instrument_symbol
 from sharesight_import_plan import (
     PlannedCash,
@@ -129,8 +130,8 @@ class ImportExecutor:
 
     def _create_trade(self, log_prefix, data):
         if float(data.get("quantity")) < 0:
-            print(
-                f"{log_prefix}\tWARN Shorts are not supported by Sharesight. "
+            warn(
+                f"{log_prefix}\tShorts are not supported by Sharesight. "
                 f"Quantity is negative: {data.get('quantity')}"
             )
         payload = build_trade_payload(self._portfolio_id, self._country_code, data)
@@ -140,7 +141,7 @@ class ImportExecutor:
         holding_id = response_data.get("holding_id") if response_data else None
         if not holding_id:
             reason = "but no error" if not result.errors else "due to error"
-            print(
+            warn(
                 f"{log_prefix}\t{result.status_code} Couldn't find holding id {reason} - "
                 f"{result.data} - skipping instrument currency check and validation"
             )
@@ -148,14 +149,15 @@ class ImportExecutor:
 
         holding = self._api_client.get_holding(holding_id)
         holding_currency = holding["holding"]["instrument"]["currency_code"]
-        for message in validate_trade(data, response_data, holding_currency):
-            print(f"{log_prefix}\t{message}")
+        for issue in validate_trade(data, response_data, holding_currency):
+            output = warn if issue.is_warning else error
+            output(f"{log_prefix}\t{issue.message}")
         return holding_id
 
     def _create_payout(self, log_prefix, data, holding_id):
         payout_key = self._payout_lookup_key(holding_id, data.get("transaction_date"))
         if payout_key in self._payouts:
-            print(f"{log_prefix}\tWARN: Skipping payout as it already appears to exist")
+            warn(f"{log_prefix}\tSkipping payout as it already appears to exist")
             return
         payload = build_payout_payload(
             self._portfolio_id, holding_id, self._country_code, data

@@ -1,11 +1,10 @@
 import csv
 import datetime
-import os
-import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from sharesight_csv_input import TRANSACTION_CSV_FIELDS
+from sharesight_console import warn
 from sharesight_custom_instruments import AUTO_NAME_SUFFIX, remove_portfolio_qualifier
 from sharesight_import_plan import SKIP_CASH_TRANSACTION_FLAG
 
@@ -129,7 +128,7 @@ class OpeningBalanceExporter:
         source_value = _decimal(account["value"], "cash account value")
         expected_total = source_value * _rate(rates, source_currency, account_currency)
         if _cents(expected_total) != _cents(total):
-            _warn(
+            warn(
                 f"Cash account {account['name']} transactions total {total} does not match "
                 f"source valuation {expected_total}"
             )
@@ -210,14 +209,6 @@ def _cents(value):
 
 def _plain(value):
     return format(value, "f")
-
-
-def _warn(message, stream=None):
-    stream = stream or sys.stderr
-    text = f"WARNING: {message}"
-    if stream.isatty() and "NO_COLOR" not in os.environ:
-        text = f"\033[33m{text}\033[0m"
-    print(text, file=stream)
 
 
 def normalize_cash_account_name(name, currency):

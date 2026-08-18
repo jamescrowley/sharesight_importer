@@ -42,9 +42,12 @@ class TradeValidationTests(unittest.TestCase):
         )
 
         self.assertEqual(len(messages), 3)
-        self.assertTrue(messages[0].startswith("ERROR FUND has instrument currency"))
-        self.assertIn("portfolio currency", messages[1])
-        self.assertIn("instrument currency", messages[2])
+        self.assertFalse(messages[0].is_warning)
+        self.assertTrue(messages[1].is_warning)
+        self.assertTrue(messages[2].is_warning)
+        self.assertTrue(messages[0].message.startswith("FUND has instrument currency"))
+        self.assertIn("portfolio currency", messages[1].message)
+        self.assertIn("instrument currency", messages[2].message)
 
     def test_sell_brokerage_reduces_expected_proceeds(self):
         messages = validate_trade(

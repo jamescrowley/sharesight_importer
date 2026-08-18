@@ -8,7 +8,8 @@ from unittest.mock import MagicMock, patch
 
 from sharesight_csv_importer import SharesightCsvImporter
 from sharesight_import_options import ImportOptions
-from sharesight_opening_balances import OpeningBalanceExporter, _warn
+from sharesight_console import warn
+from sharesight_opening_balances import OpeningBalanceExporter
 
 
 class TtyBuffer(io.StringIO):
@@ -108,20 +109,20 @@ class OpeningBalanceExporterTests(unittest.TestCase):
                 "date,GBP/AUD,AUD/GBP\n2024-07-01,2,0.5\n",
                 encoding="utf-8",
             )
-            with patch("sharesight_opening_balances._warn") as warn:
+            with patch("sharesight_opening_balances.warn") as warning:
                 rows = OpeningBalanceExporter(self.api).export(
                     "Source", datetime.date(2024, 7, 1), rates,
                     directory / "opening.csv",
                 )
 
-        warn.assert_called_once()
-        self.assertIn("transactions total 100", warn.call_args.args[0])
+        warning.assert_called_once()
+        self.assertIn("transactions total 100", warning.call_args.args[0])
         self.assertEqual(rows[0]["amount"], "100")
 
     def test_warning_is_yellow_on_a_colour_capable_terminal(self):
         stream = TtyBuffer()
         with patch.dict("os.environ", {}, clear=True):
-            _warn("Something differs", stream=stream)
+            warn("Something differs", stream=stream)
         self.assertEqual(
             stream.getvalue(),
             "\033[33mWARNING: Something differs\033[0m\n",

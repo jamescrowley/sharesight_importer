@@ -1,5 +1,6 @@
 import csv
 
+from sharesight_console import warn
 from sharesight_csv_input import iter_transaction_rows
 
 
@@ -105,8 +106,8 @@ class CustomInstrumentSynchronizer:
             saved_instrument = self._api_client.create_custom_investment(payload)
 
         if saved_instrument and saved_instrument.get("currency_code") != payload["currency_code"]:
-            print(
-                f"WARN Sharesight has set {payload['code']} currency code to "
+            warn(
+                f"Sharesight has set {payload['code']} currency code to "
                 f"{saved_instrument.get('currency_code')} based on domicile, but instrument "
                 f"currency is set to {payload['currency_code']}"
             )

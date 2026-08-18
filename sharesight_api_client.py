@@ -1,6 +1,7 @@
 import json
 import time
 from dataclasses import dataclass
+
 import curlify
 import requests
 
@@ -17,8 +18,8 @@ class ApiResult:
     def successful(self):
         return self.status_code == 200 and not self.errors
 
+
 class SharesightApiClient:
-    
     API_V2_BASE_URL = "https://api.sharesight.com/api/v2/"
     API_V3_BASE_URL = "https://api.sharesight.com/api/v3/"
     API_V3_INTERNAL_BASE_URL = "https://api.sharesight.com/api/v3.0-internal/"
@@ -54,13 +55,18 @@ class SharesightApiClient:
         retry_delay = 5
         
         for attempt in range(max_retries):
-            response = requests.request(method, url, json=json, headers = headers or default_headers)
+            response = requests.request(
+                method, url, json=json, headers=headers or default_headers
+            )
             
             if response.status_code not in [502, 504]: # gateway timeout or bad gateway
                 break
                 
             if attempt < max_retries - 1:
-                print(f"Gateway timeout (attempt {attempt + 1}/{max_retries}), waiting {retry_delay}s before retrying: {url}")
+                print(
+                    f"Gateway timeout (attempt {attempt + 1}/{max_retries}), waiting "
+                    f"{retry_delay}s before retrying: {url}"
+                )
                 time.sleep(retry_delay)
                 retry_delay *= 2
         
@@ -143,8 +149,10 @@ class SharesightApiClient:
 
     def resync_cash_account(self, cash_account_id):
         # note - undocumented API
-        return self._make_request('post', 
-            f"{self.API_V2_BASE_URL}cash_accounts/{cash_account_id}/reset.json?start_date=%222010-01-01T00:00:00.000Z%22"
+        return self._make_request(
+            "post",
+            f"{self.API_V2_BASE_URL}cash_accounts/{cash_account_id}/reset.json?"
+            "start_date=%222010-01-01T00:00:00.000Z%22",
         )
 
     def get_portfolios(self):
@@ -192,8 +200,10 @@ class SharesightApiClient:
         )
     
     def get_cash_account_transactions(self, cash_account_id, from_date, to_date):
-        return self._make_request('get', 
-            f"{self.API_V2_BASE_URL}cash_accounts/{cash_account_id}/cash_account_transactions.json?from={from_date}&to={to_date}"
+        return self._make_request(
+            "get",
+            f"{self.API_V2_BASE_URL}cash_accounts/{cash_account_id}/"
+            f"cash_account_transactions.json?from={from_date}&to={to_date}",
         ).json()
     
     def get_custom_investments(self, portfolio_id):
@@ -236,8 +246,10 @@ class SharesightApiClient:
         ).json()
     
     def get_custom_investment_prices(self, custom_investment_id, start_date, end_date):
-        return self._make_request('get', 
-            f'{self.API_V3_BASE_URL}custom_investment/{custom_investment_id}/prices.json?start_date={start_date}&end_date={end_date}'
+        return self._make_request(
+            "get",
+            f"{self.API_V3_BASE_URL}custom_investment/{custom_investment_id}/"
+            f"prices.json?start_date={start_date}&end_date={end_date}",
         ).json()
     
     def get_valuation_on(self, portfolio_id, date):
@@ -279,9 +291,11 @@ class SharesightApiClient:
         )
 
     def try_create_cash_transaction(self, cash_account_id, cash_data):
-        return self._make_tolerant_request('post',
-            f'{self.API_V2_BASE_URL}cash_accounts/{cash_account_id}/cash_account_transactions.json', 
-            json={"cash_account_transaction": cash_data}
+        return self._make_tolerant_request(
+            "post",
+            f"{self.API_V2_BASE_URL}cash_accounts/{cash_account_id}/"
+            "cash_account_transactions.json",
+            json={"cash_account_transaction": cash_data},
         )
 
 

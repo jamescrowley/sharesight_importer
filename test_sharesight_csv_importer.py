@@ -4,6 +4,7 @@ import datetime
 import tempfile
 from pathlib import Path
 from sharesight_csv_importer import SharesightCsvImporter
+from sharesight_custom_instruments import AUTO_NAME_SUFFIX
 from sharesight_api_client import ApiResult
 from sharesight_import_options import ImportOptions, OpeningBalanceOptions
 
@@ -227,7 +228,7 @@ tx3,BUY,2023-03-10,MYFUND,OTHER,50,10.0,501.0,USD,My USD Account,Custom Fund,1,U
         expected_symbol_key = f"MYFUND-{PORTFOLIO_ID}"
         self.assertEqual(custom_inv_args['portfolio_id'], PORTFOLIO_ID)
         self.assertEqual(custom_inv_args['code'], expected_symbol_key)
-        self.assertEqual(custom_inv_args['name'], f"My Custom Fund {SharesightCsvImporter.CUSTOM_INSTRUMENT_SUFFIX}")
+        self.assertEqual(custom_inv_args['name'], f"My Custom Fund {AUTO_NAME_SUFFIX}")
         self.assertEqual(custom_inv_args['country_code'], 'US')
         self.assertEqual(custom_inv_args['currency_code'], 'USD')
         self.assertEqual(custom_inv_args['investment_type'], 'MANAGED_FUND')

@@ -1,6 +1,12 @@
 import sys
 
-from sharesight_import_plan import PlannedCash, PlannedMerge, PlannedPayout, PlannedTrade
+from sharesight_custom_instruments import qualify_custom_instrument_symbol
+from sharesight_import_plan import (
+    PlannedCash,
+    PlannedMerge,
+    PlannedPayout,
+    PlannedTrade,
+)
 from sharesight_payloads import (
     build_cash_payload,
     build_merge_payload,
@@ -8,12 +14,6 @@ from sharesight_payloads import (
     build_trade_payload,
 )
 from sharesight_trade_validation import validate_trade
-
-
-def qualify_custom_instrument_symbol(data_row, portfolio_id):
-    symbol = data_row.get("symbol")
-    return f"{symbol}-{portfolio_id}" if data_row.get("market", "").lower() == "other" else symbol
-
 
 def holding_lookup_key(portfolio_id, symbol, market):
     return f"{portfolio_id}-{market}-{symbol}".lower()
@@ -76,8 +76,8 @@ class ImportExecutor:
             return False
 
         payload = build_merge_payload(holding_id, buy_data)
-        response = self._api_client.try_create_holding_merge(self._portfolio_id, payload)
-        self._print_result(log_prefix, payload, response)
+        result = self._api_client.try_create_holding_merge(self._portfolio_id, payload)
+        self._print_result(log_prefix, payload, result)
         return True
 
     def _execute_operation(self, operation):
@@ -113,7 +113,10 @@ class ImportExecutor:
             return True
 
         if isinstance(operation, PlannedCash):
-            cash_account_key = f"{data.get('amount_currency')}-{data.get('cash_account') or 'Account'}"
+            cash_account_key = (
+                f"{data.get('amount_currency')}-"
+                f"{data.get('cash_account') or 'Account'}"
+            )
             self._create_cash(self._cash_accounts.get(cash_account_key), log_prefix, data)
             return True
 
@@ -131,15 +134,15 @@ class ImportExecutor:
                 f"Quantity is negative: {data.get('quantity')}"
             )
         payload = build_trade_payload(self._portfolio_id, self._country_code, data)
-        response = self._api_client.try_create_trade(payload)
-        self._print_result(log_prefix, payload, response)
-        response_data = response.data.get("trade")
+        result = self._api_client.try_create_trade(payload)
+        self._print_result(log_prefix, payload, result)
+        response_data = result.data.get("trade")
         holding_id = response_data.get("holding_id") if response_data else None
         if not holding_id:
-            reason = "but no error" if not response.errors else "due to error"
+            reason = "but no error" if not result.errors else "due to error"
             print(
-                f"{log_prefix}\t{response.status_code} Couldn't find holding id {reason} - "
-                f"{response.data} - skipping instrument currency check and validation"
+                f"{log_prefix}\t{result.status_code} Couldn't find holding id {reason} - "
+                f"{result.data} - skipping instrument currency check and validation"
             )
             return None
 
@@ -157,17 +160,18 @@ class ImportExecutor:
         payload = build_payout_payload(
             self._portfolio_id, holding_id, self._country_code, data
         )
-        response = self._api_client.try_create_payout(payload)
-        self._print_result(log_prefix, payload, response)
+        result = self._api_client.try_create_payout(payload)
+        self._print_result(log_prefix, payload, result)
 
     def _create_cash(self, cash_account_id, log_prefix, data):
         if cash_account_id is None:
             raise ValueError(
-                f"Unable to find cash account {data.get('amount_currency')} {data.get('cash_account')}"
+                f"Unable to find cash account {data.get('amount_currency')} "
+                f"{data.get('cash_account')}"
             )
         payload = build_cash_payload(data)
-        response = self._api_client.try_create_cash_transaction(cash_account_id, payload)
-        self._print_result(log_prefix, payload, response)
+        result = self._api_client.try_create_cash_transaction(cash_account_id, payload)
+        self._print_result(log_prefix, payload, result)
 
     def _payout_lookup_key(self, holding_id, paid_on):
         return f"{self._portfolio_id}-{holding_id}-{paid_on}".lower()

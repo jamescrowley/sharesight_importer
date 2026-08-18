@@ -378,17 +378,13 @@ class ImporterHttpIntegrationTests(unittest.TestCase):
             f"https://api.sharesight.com/api/v3/custom_investments/{auto_instrument_id}",
         ])
 
-    @unittest.expectedFailure
     def test_cost_base_adjustment_has_no_cash_effect(self):
-        """Known defect: ADJUST_COST_BASE is absent from NON_CASH_TX_TYPES."""
         self.run_import([csv_row(
             unique_identifier="adjust", transaction_type="ADJUST_COST_BASE", amount="0",
         )])
         self.assertEqual(self.transport.cash_transactions, [])
 
-    @unittest.expectedFailure
     def test_filtered_out_custom_instrument_causes_no_setup_mutation(self):
-        """Known defect: setup scans unfiltered rows before transaction filtering."""
         self.run_import([
             csv_row(unique_identifier="old-custom", transaction_date="2023-01-01", symbol="OLD", market="OTHER",
                     symbol_name="Excluded Fund", instrument_country_code="GB", symbol_type="MANAGED_FUND"),
@@ -396,16 +392,13 @@ class ImporterHttpIntegrationTests(unittest.TestCase):
         ], min_date=datetime.date(2024, 1, 1))
         self.assertEqual(self.transport.custom_investments, [])
 
-    @unittest.expectedFailure
     def test_missing_cash_account_is_rejected_before_trade_mutation(self):
-        """Known defect: an existing portfolio does not create a missing account and sends cash to None."""
         self.transport.add_portfolio()
-        self.run_import([csv_row(unique_identifier="unsafe-buy")])
+        with self.assertRaisesRegex(ValueError, "missing required cash accounts"):
+            self.run_import([csv_row(unique_identifier="unsafe-buy")])
         self.assertEqual(self.transport.trades, [])
 
-    @unittest.expectedFailure
     def test_filter_cannot_select_only_one_member_of_merge_pair(self):
-        """Known defect: merge code bypasses the filtered iterator and has no preflight validation."""
         portfolio = self.transport.add_portfolio()
         self.transport.add_cash_account(portfolio["id"], "GBP", "Broker")
         self.transport.add_holding(portfolio["id"], "OLD", "LSE")
@@ -415,6 +408,23 @@ class ImporterHttpIntegrationTests(unittest.TestCase):
                 csv_row(unique_identifier="merge-buy", transaction_type="MERGE_BUY", symbol="NEW"),
             ], min_line=3, max_line=3)
         self.assertEqual(self.transport.merges, [])
+
+    def test_incomplete_merge_pair_is_rejected_before_portfolio_setup(self):
+        with self.assertRaisesRegex(ValueError, "merge pair is incomplete"):
+            self.run_import([
+                csv_row(unique_identifier="merge-cancel", transaction_type="MERGE_CANCEL", symbol="OLD"),
+            ])
+        self.assertEqual(self.transport.portfolios, [])
+
+    def test_unsupported_country_is_rejected_before_portfolio_setup(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported country code"):
+            self.run_import([csv_row()], country_code="US")
+        self.assertEqual(self.transport.portfolios, [])
+
+    def test_unsupported_transaction_is_rejected_before_portfolio_setup(self):
+        with self.assertRaisesRegex(ValueError, "unsupported transaction type"):
+            self.run_import([csv_row(transaction_type="UNKNOWN")])
+        self.assertEqual(self.transport.portfolios, [])
 
 
 if __name__ == "__main__":

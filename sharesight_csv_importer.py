@@ -1,11 +1,12 @@
 import csv
 import datetime
-from itertools import chain
 import json
 import os
 import sys
 from typing import TextIO
 from sharesight_api_client import SharesightApiClient
+from sharesight_csv_input import MergePair, iter_transaction_rows, load_transactions, validate_transactions
+
 
 class SharesightCsvImporter:
     
@@ -40,7 +41,7 @@ class SharesightCsvImporter:
     }
     # cancel is not strictly a non-cash transaction, we are just using it for transfer
     # of holdings across portfolios
-    NON_CASH_TX_TYPES = ["OPENING_BALANCE", "CANCEL", "MERGE_BUY", "MERGE_CANCEL", "CONSOLD", "BONUS", "SPLIT", "RETAINED_NET_INCOME", "RETAINED_EQUALISATION"]
+    NON_CASH_TX_TYPES = ["OPENING_BALANCE", "ADJUST_COST_BASE", "CANCEL", "MERGE_BUY", "MERGE_CANCEL", "CONSOLD", "BONUS", "SPLIT", "RETAINED_NET_INCOME", "RETAINED_EQUALISATION"]
     CUSTOM_INSTRUMENT_SUFFIX = "(AUTO)"
     INTERNAL_SKIP_CASH_TX_FLAG = "skip_cash_account_transaction"
 
@@ -63,35 +64,41 @@ class SharesightCsvImporter:
     def _get_symbol_key_with_portfolio_qualifier_for_custom_instruments(self, data_row, portfolio_id: str):
         return data_row.get("symbol") + f"-{portfolio_id}" if data_row.get('market','').lower()=='other' else data_row.get("symbol")
 
-    def _get_unique_cash_accounts_in_file(self, file_path: TextIO):
-        with open(file_path, mode='r', encoding='utf-8-sig') as file:
-            reader = csv.DictReader(file)
-            return set( (data_row.get("amount_currency"),data_row.get("cash_account") or "") for data_row in reader)
+    def _requires_cash_account(self, data_row):
+        return (
+            not data_row.get(self.INTERNAL_SKIP_CASH_TX_FLAG)
+            and data_row.get("transaction_type") not in self.NON_CASH_TX_TYPES
+        )
 
-    def _get_unique_custom_instruments_in_file(self, file_path: TextIO, portfolio_id: str) -> list[dict]:
-        with open(file_path, mode='r', encoding='utf-8-sig') as file:
-            reader = csv.DictReader(file)
-            return [
-                {
-                    "symbol": symbol,
-                    "symbol_name": symbol_name,
-                    "instrument_country_code": country_code,
-                    # this is ignored currently, it just uses the country code's currency 
-                    "instrument_currency": instrument_currency,
-                    "symbol_type": symbol_type
-                }
-                for symbol, symbol_name, country_code, instrument_currency, symbol_type in {
-                    (
-                        self._get_symbol_key_with_portfolio_qualifier_for_custom_instruments(data_row, portfolio_id),
-                        data_row.get("symbol_name"),
-                        data_row.get("instrument_country_code"),
-                        data_row.get("instrument_currency"),
-                        data_row.get("symbol_type")
-                    )
-                    for data_row in reader
-                    if data_row.get("market", "").lower() == "other"
-                }
-            ]
+    def _get_unique_cash_accounts(self, transactions):
+        return {
+            (row.data.get("amount_currency"), row.data.get("cash_account") or "")
+            for row in iter_transaction_rows(transactions)
+            if self._requires_cash_account(row.data)
+        }
+
+    def _get_unique_custom_instruments(self, transactions, portfolio_id: str) -> list[dict]:
+        return [
+            {
+                "symbol": symbol,
+                "symbol_name": symbol_name,
+                "instrument_country_code": country_code,
+                "instrument_currency": instrument_currency,
+                "symbol_type": symbol_type,
+            }
+            for symbol, symbol_name, country_code, instrument_currency, symbol_type in {
+                (
+                    self._get_symbol_key_with_portfolio_qualifier_for_custom_instruments(row.data, portfolio_id),
+                    row.data.get("symbol_name"),
+                    row.data.get("instrument_country_code"),
+                    row.data.get("instrument_currency"),
+                    row.data.get("symbol_type"),
+                )
+                for row in iter_transaction_rows(transactions)
+                if row.data.get("market", "").lower() == "other"
+                and row.data.get("symbol_name")
+            }
+        ]
 
     def get_internal_exchange_rates(self, exchange_rates_file_path: str, requested_date: datetime.date):
         with open(exchange_rates_file_path, mode='r', encoding='utf-8-sig') as f:
@@ -187,10 +194,21 @@ class SharesightCsvImporter:
         self._process_transactions(file_path, portfolio_name, country_code, delete_existing, min_date, exclude_exdate_transactions_before_min_date, min_line, max_line, opening_balances, prices_file_path)
         
     def _process_transactions(self, file_path: TextIO, portfolio_name: str, country_code: str, delete_existing: bool, min_date: datetime.date, exclude_exdate_transactions_before_min_date: bool, min_line: int, max_line: int, injected_opening_balances: list[dict], prices_file_path: TextIO):
-        cash_accounts_in_file = self._get_unique_cash_accounts_in_file(file_path)
-        portfolio_id, cash_accounts = self._get_or_create_portfolio(portfolio_name, country_code, cash_accounts_in_file, delete_existing)
+        transactions = load_transactions(
+            file_path,
+            injected_opening_balances,
+            min_date,
+            exclude_exdate_transactions_before_min_date,
+            min_line,
+            max_line,
+        )
+        validate_transactions(transactions, country_code, self.TRANSACTION_TYPE_TO_API_ENDPOINT)
+        cash_accounts_in_file = self._get_unique_cash_accounts(transactions)
+        portfolio_id, cash_accounts = self._get_or_create_portfolio(
+            portfolio_name, country_code, cash_accounts_in_file, delete_existing
+        )
 
-        custom_instruments_in_file = self._get_unique_custom_instruments_in_file(file_path, portfolio_id)
+        custom_instruments_in_file = self._get_unique_custom_instruments(transactions, portfolio_id)
         print(f"Found {len(custom_instruments_in_file)} custom instruments")
         print('    ' + '\n    '.join(f"{p}" for p in custom_instruments_in_file))
         print(f"Creating custom instruments")
@@ -205,81 +223,79 @@ class SharesightCsvImporter:
         portfolio_holdings = self._api_client.get_portfolio_holdings(portfolio_id)['holdings']
         portfolio_holdings_lookup = {self.get_portfolio_holdings_lookup_key(portfolio_id, h['instrument']['code'], h['instrument']['market_code']): h['id'] for h in portfolio_holdings}
 
-        with open(file_path, mode='r', encoding='utf-8-sig') as file:
-            reader = csv.DictReader(file)
-            print(f"Found columns in CSV: {reader.fieldnames}")
-            filtered_reader = reader
-            if min_line:
-                print(f"Filtering transactions before line {min_line}")
-                filtered_reader = filter(lambda row: reader.line_num >= min_line, filtered_reader)
-            if max_line:
-                print(f"Filtering transactions after line {max_line}")
-                filtered_reader = filter(lambda row: reader.line_num <= max_line, filtered_reader)
-            if min_date:
-                print(f"Filtering transactions with a tx date before {min_date}"  )
-                filtered_reader = filter(lambda row: 
-                                            (datetime.datetime.strptime(row['transaction_date'], "%Y-%m-%d").date()) >= min_date and 
-                                            (not exclude_exdate_transactions_before_min_date or row['goes_ex_on'] == '' or datetime.datetime.strptime(row['goes_ex_on'], "%Y-%m-%d").date() >= min_date) 
-                                            , filtered_reader)
-            if (injected_opening_balances):
-                filtered_reader = chain(injected_opening_balances, filtered_reader)
-            
-            for data_row in filtered_reader:
-                log_line_prefix = f"Line {reader.line_num}\t{data_row['unique_identifier']}\t{data_row['transaction_type']}"
-                api_endpoint_type = self.TRANSACTION_TYPE_TO_API_ENDPOINT.get(data_row.get('transaction_type'))
-                data_row.update({"symbol": self._get_symbol_key_with_portfolio_qualifier_for_custom_instruments(data_row, portfolio_id)})
-                holding_id_lookup_key = self.get_portfolio_holdings_lookup_key(portfolio_id, data_row.get("symbol"), data_row.get("market"))
-                cash_account_name = self._get_cash_account_lookup_key(data_row.get("amount_currency"), data_row.get("cash_account"))
-                cash_account_id = cash_accounts.get(cash_account_name)
-                match api_endpoint_type:
-                    case 'trade':
-                        holding_id = self._process_trade(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, portfolio_payouts_lookup)
-                        if(holding_id):
-                            print(f"{log_line_prefix}\tSaved holding id {holding_id} in {holding_id_lookup_key}")
-                            portfolio_holdings_lookup[holding_id_lookup_key] = holding_id
-                        else:
-                            print(f"{log_line_prefix}\tLooking up holding id for {holding_id_lookup_key}")
-                            existing_holding_id = portfolio_holdings_lookup.get(holding_id_lookup_key)
-                            if (existing_holding_id == None):
-                                print(f"{log_line_prefix}\tMissing holding id for {holding_id_lookup_key}")
-                    case 'payout':
-                        # cannot rely on using symbol/market directly, as this doesn't work for custom instruments
+        for transaction in transactions:
+            if isinstance(transaction, MergePair):
+                cancel_data_row = dict(transaction.cancel.data)
+                buy_data_row = dict(transaction.buy.data)
+                cancel_data_row["symbol"] = self._get_symbol_key_with_portfolio_qualifier_for_custom_instruments(
+                    cancel_data_row, portfolio_id
+                )
+                buy_data_row["symbol"] = self._get_symbol_key_with_portfolio_qualifier_for_custom_instruments(
+                    buy_data_row, portfolio_id
+                )
+                log_line_prefix = (
+                    f"Lines {transaction.cancel.line_number}-{transaction.buy.line_number}\t"
+                    f"{cancel_data_row['unique_identifier']}\tMERGE"
+                )
+                cancel_holding_id_lookup_key = self.get_portfolio_holdings_lookup_key(
+                    portfolio_id, cancel_data_row.get("symbol"), cancel_data_row.get("market")
+                )
+                existing_holding_id = portfolio_holdings_lookup.get(cancel_holding_id_lookup_key)
+                if existing_holding_id is None:
+                    print(
+                        f"{log_line_prefix}\tERROR Unable to find holding id for cancellation matching "
+                        f"{cancel_holding_id_lookup_key} - {cancel_data_row.get('symbol')}, "
+                        f"{cancel_data_row.get('market')}. Known holdings {portfolio_holdings_lookup}",
+                        file=sys.stderr,
+                    )
+                    return None
+                self._process_merge(portfolio_id, existing_holding_id, log_line_prefix, buy_data_row)
+                continue
+
+            data_row = dict(transaction.data)
+            log_line_prefix = (
+                f"Line {transaction.line_number}\t{data_row['unique_identifier']}\t{data_row['transaction_type']}"
+            )
+            api_endpoint_type = self.TRANSACTION_TYPE_TO_API_ENDPOINT[data_row.get('transaction_type')]
+            data_row["symbol"] = self._get_symbol_key_with_portfolio_qualifier_for_custom_instruments(
+                data_row, portfolio_id
+            )
+            holding_id_lookup_key = self.get_portfolio_holdings_lookup_key(
+                portfolio_id, data_row.get("symbol"), data_row.get("market")
+            )
+            cash_account_name = self._get_cash_account_lookup_key(
+                data_row.get("amount_currency"), data_row.get("cash_account")
+            )
+            cash_account_id = cash_accounts.get(cash_account_name)
+            match api_endpoint_type:
+                case 'trade':
+                    holding_id = self._process_trade(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, portfolio_payouts_lookup)
+                    if(holding_id):
+                        print(f"{log_line_prefix}\tSaved holding id {holding_id} in {holding_id_lookup_key}")
+                        portfolio_holdings_lookup[holding_id_lookup_key] = holding_id
+                    else:
+                        print(f"{log_line_prefix}\tLooking up holding id for {holding_id_lookup_key}")
                         existing_holding_id = portfolio_holdings_lookup.get(holding_id_lookup_key)
                         if (existing_holding_id == None):
-                            print(f'{log_line_prefix}\tERROR Unable to find holding id matching "{holding_id_lookup_key}" - {data_row.get("symbol")}, {data_row.get("market")}. Known holdings {portfolio_holdings_lookup}', file=sys.stderr)
-                            return None
-                        self._process_payout(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup)
-                    case 'accumulation':
-                        # dividend is a payout, equalisation is a capital_return
-                        existing_holding_id = portfolio_holdings_lookup.get(holding_id_lookup_key)
-                        if (existing_holding_id == None):
-                            print(f'{log_line_prefix}\tERROR Unable to find holding id matching "{holding_id_lookup_key}" - {data_row.get("symbol")}, {data_row.get("market")}. Known holdings {portfolio_holdings_lookup}', file=sys.stderr)
-                            return None
-                        self._process_accumulation(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup)
-                    case 'merge':
-                        next_data_row = reader.__next__()
-                        next_data_row.update({"symbol": self._get_symbol_key_with_portfolio_qualifier_for_custom_instruments(next_data_row, portfolio_id)})
-                        if (next_data_row.get("transaction_type") != "MERGE_BUY" and next_data_row.get("transaction_type") != "MERGE_CANCEL"):
-                            print(f"{log_line_prefix}\tERROR Expected MERGE_BUY or MERGE_CANCEL to follow but got {next_data_row.get('transaction_type')}", file=sys.stderr)
-                            reader.backup(1)  # put the row back for next iteration
-                            return None
-                        if (next_data_row.get("transaction_type") == "MERGE_CANCEL"):
-                            cancel_data_row = next_data_row
-                            buy_data_row = data_row
-                        else:
-                            cancel_data_row = data_row
-                            buy_data_row = next_data_row
-                        cancel_holding_id_lookup_key = self.get_portfolio_holdings_lookup_key(portfolio_id, cancel_data_row.get("symbol"), cancel_data_row.get("market"))
-                        existing_holding_id = portfolio_holdings_lookup.get(cancel_holding_id_lookup_key)
-                        if (existing_holding_id == None):
-                            print(f"{log_line_prefix}\tERROR Unable to find holding id for cancellation matching {cancel_holding_id_lookup_key} - {cancel_data_row.get('symbol')}, {cancel_data_row.get('market')}. Known holdings {portfolio_holdings_lookup}", file=sys.stderr)
-                            return None
-                        self._process_merge(portfolio_id, existing_holding_id, log_line_prefix, buy_data_row)
-                    case 'cash':
-                        self._process_cash(cash_account_id, log_line_prefix, data_row)
-                    case _:
-                        print(f"{log_line_prefix}\tERROR Unable to map {data_row.get('transaction_type')} to an API endpoint", file=sys.stderr)
+                            print(f"{log_line_prefix}\tMissing holding id for {holding_id_lookup_key}")
+                case 'payout':
+                    # cannot rely on using symbol/market directly, as this doesn't work for custom instruments
+                    existing_holding_id = portfolio_holdings_lookup.get(holding_id_lookup_key)
+                    if (existing_holding_id == None):
+                        print(f'{log_line_prefix}\tERROR Unable to find holding id matching "{holding_id_lookup_key}" - {data_row.get("symbol")}, {data_row.get("market")}. Known holdings {portfolio_holdings_lookup}', file=sys.stderr)
                         return None
+                    self._process_payout(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup)
+                case 'accumulation':
+                    # dividend is a payout, equalisation is a capital_return
+                    existing_holding_id = portfolio_holdings_lookup.get(holding_id_lookup_key)
+                    if (existing_holding_id == None):
+                        print(f'{log_line_prefix}\tERROR Unable to find holding id matching "{holding_id_lookup_key}" - {data_row.get("symbol")}, {data_row.get("market")}. Known holdings {portfolio_holdings_lookup}', file=sys.stderr)
+                        return None
+                    self._process_accumulation(portfolio_id, country_code, cash_account_id, log_line_prefix, data_row, existing_holding_id, portfolio_payouts_lookup)
+                case 'cash':
+                    self._process_cash(cash_account_id, log_line_prefix, data_row)
+                case _:
+                    raise AssertionError(f"Unhandled endpoint type: {api_endpoint_type}")
         print(f"Syncing cash accounts")
         for cash_account in set(cash_accounts.values()):
             if cash_account:
@@ -408,6 +424,17 @@ class SharesightCsvImporter:
             print(f"Removing existing custom instruments")
             self._api_client.delete_custom_instruments(portfolio_id, self.CUSTOM_INSTRUMENT_SUFFIX)
             cash_accounts = self._create_cash_accounts(portfolio_id, cash_accounts_in_file)
+        else:
+            required_cash_account_keys = {
+                self._get_cash_account_lookup_key(currency, name)
+                for currency, name in cash_accounts_in_file
+            }
+            missing_cash_accounts = sorted(required_cash_account_keys - set(cash_accounts))
+            if missing_cash_accounts:
+                raise ValueError(
+                    f"Portfolio {portfolio_name} is missing required cash accounts: "
+                    f"{', '.join(missing_cash_accounts)}"
+                )
         return portfolio_id,cash_accounts
     
     def _process_merge(self, portfolio_id, existing_holding_id, log_line_prefix, data_row):

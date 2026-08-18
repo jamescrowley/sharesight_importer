@@ -5,6 +5,7 @@ from sharesight_import_plan import (
     PlannedCash,
     PlannedPayout,
     PlannedTrade,
+    SKIP_CASH_TRANSACTION_FLAG,
     build_import_plan,
 )
 
@@ -26,20 +27,19 @@ def row(transaction_type, **overrides):
 
 class ImportPlanTests(unittest.TestCase):
     def test_buy_expands_to_trade_then_cash(self):
-        plan = build_import_plan([row("BUY")], "skip_cash")
+        plan = build_import_plan([row("BUY")])
 
         self.assertEqual([type(operation) for operation in plan], [PlannedTrade, PlannedCash])
         self.assertIs(plan[0].data, plan[1].data)
 
     def test_non_cash_trade_has_no_cash_operation(self):
-        plan = build_import_plan([row("ADJUST_COST_BASE")], "skip_cash")
+        plan = build_import_plan([row("ADJUST_COST_BASE")])
 
         self.assertEqual([type(operation) for operation in plan], [PlannedTrade])
 
     def test_internal_skip_flag_suppresses_cash_operation(self):
         plan = build_import_plan(
-            [row("BUY", skip_cash=True)],
-            "skip_cash",
+            [row("BUY", **{SKIP_CASH_TRANSACTION_FLAG: True})],
         )
 
         self.assertEqual([type(operation) for operation in plan], [PlannedTrade])
@@ -53,7 +53,7 @@ class ImportPlanTests(unittest.TestCase):
                 accrued_income_in_aud="3.8",
                 accrued_income_in_gbp="2",
             )
-        ], "skip_cash")
+        ])
 
         self.assertEqual(
             [type(operation) for operation in plan],
@@ -63,14 +63,14 @@ class ImportPlanTests(unittest.TestCase):
         self.assertEqual(plan[2].data["goes_ex_on"], "2024-01-09")
 
     def test_retained_income_expands_to_two_non_cash_operations(self):
-        plan = build_import_plan([row("RETAINED_NET_INCOME")], "skip_cash")
+        plan = build_import_plan([row("RETAINED_NET_INCOME")])
 
         self.assertEqual([type(operation) for operation in plan], [PlannedPayout, PlannedTrade])
         self.assertEqual(plan[1].data["transaction_type"], "CAPITAL_CALL")
         self.assertEqual(plan[1].data["unique_identifier"], "transaction-1_CALL")
 
     def test_zero_capital_operation_is_omitted(self):
-        plan = build_import_plan([row("CAPITAL_RETURN", amount="0")], "skip_cash")
+        plan = build_import_plan([row("CAPITAL_RETURN", amount="0")])
 
         self.assertEqual(plan, [])
 

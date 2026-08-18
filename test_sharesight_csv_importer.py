@@ -4,6 +4,7 @@ import datetime
 import tempfile
 from pathlib import Path
 from sharesight_csv_importer import SharesightCsvImporter
+from sharesight_import_options import ImportOptions, OpeningBalanceOptions
 
 # Test Data Constants
 PORTFOLIO_NAME = "Test Portfolio"
@@ -103,19 +104,25 @@ class TestSharesightCsvImporter(unittest.TestCase):
             if exchange_rates_path:
                 exchange_rates_path.write_text(exchange_rates_csv_data, encoding="utf-8")
 
-            self.importer.import_file(
-                file_path=transactions_path,
-                portfolio_name=portfolio_name,
-                country_code=country_code,
+            opening_balance = (
+                OpeningBalanceOptions(
+                    valuation_date=opening_balance_on,
+                    source_portfolio_name=opening_balance_from,
+                    exchange_rates_file_path=exchange_rates_path,
+                )
+                if opening_balance_on else None
+            )
+            options = ImportOptions(
                 delete_existing=delete_existing,
                 min_date=min_date,
                 exclude_exdate_transactions_before_min_date=exclude_exdate_transactions_before_min_date,
-                opening_balance_on=opening_balance_on,
-                opening_balance_from=opening_balance_from,
                 min_line=min_line,
                 max_line=max_line,
                 prices_file_path=prices_path,
-                exchange_rates_file_path=exchange_rates_path
+                opening_balance=opening_balance,
+            )
+            self.importer.import_file(
+                transactions_path, portfolio_name, country_code, options
             )
 
     def test_import_new_portfolio_simple_buy(self):

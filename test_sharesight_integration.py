@@ -10,6 +10,7 @@ import requests
 
 from sharesight_api_client import SharesightApiClient
 from sharesight_csv_importer import SharesightCsvImporter
+from sharesight_import_options import ImportOptions
 
 
 CSV_HEADER = (
@@ -222,16 +223,19 @@ class ImporterHttpIntegrationTests(unittest.TestCase):
 
     def run_import(self, rows, **overrides):
         options = {
-            "portfolio_name": "Test Portfolio", "country_code": "GB", "delete_existing": False,
+            "delete_existing": False,
             "min_date": None, "exclude_exdate_transactions_before_min_date": False,
-            "opening_balance_on": None, "opening_balance_from": None, "min_line": None,
-            "max_line": None, "prices_file_path": None, "exchange_rates_file_path": None,
+            "min_line": None, "max_line": None, "prices_file_path": None,
         }
+        portfolio_name = overrides.pop("portfolio_name", "Test Portfolio")
+        country_code = overrides.pop("country_code", "GB")
         options.update(overrides)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "transactions.csv"
             path.write_text(CSV_HEADER + "".join(rows), encoding="utf-8-sig")
-            return self.importer.import_file(path, **options)
+            return self.importer.import_file(
+                path, portfolio_name, country_code, ImportOptions(**options)
+            )
 
     def test_mixed_workflow_reaches_real_http_client_and_preserves_cash_effects(self):
         self.run_import([

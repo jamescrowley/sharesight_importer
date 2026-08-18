@@ -1,6 +1,4 @@
 import csv
-import datetime
-import os
 import sys
 from typing import TextIO
 from sharesight_api_client import SharesightApiClient
@@ -11,6 +9,8 @@ from sharesight_import_plan import (
     SUPPORTED_TRANSACTION_TYPES,
     build_import_plan,
 )
+from sharesight_import_options import ImportOptions
+from sharesight_opening_balances import OpeningBalanceGenerator, normalize_cash_account_name
 
 
 class SharesightCsvImporter:
@@ -18,13 +18,12 @@ class SharesightCsvImporter:
     INCOME_ACCOUNT_SUFFIX = "Income Account"
     CAPITAL_ACCOUNT_SUFFIX = "Capital Account"
     CUSTOM_INSTRUMENT_SUFFIX = "(AUTO)"
-    INTERNAL_SKIP_CASH_TX_FLAG = "skip_cash_account_transaction"
-
     def __init__(self, api_client: SharesightApiClient):
         self._api_client = api_client
 
-    def _remove_portfolio_qualifier_from_symbol(self, symbol: str, portfolio_id: str):
-        return symbol[:-len(f"-{portfolio_id}")] if symbol.endswith(f"-{portfolio_id}") else symbol
+    def _remove_portfolio_qualifier_from_symbol(self, symbol, portfolio_id):
+        suffix = f"-{portfolio_id}"
+        return symbol[:-len(suffix)] if symbol.endswith(suffix) else symbol
 
     # sharesight has a bug which means merge_cancel and merge_buy do not work
     # if there are custom instruments with the same identifier in different portfolios
@@ -63,113 +62,51 @@ class SharesightCsvImporter:
             }
         ]
 
-    def get_internal_exchange_rates(self, exchange_rates_file_path: str, requested_date: datetime.date):
-        with open(exchange_rates_file_path, mode='r', encoding='utf-8-sig') as f:
-            reader = csv.DictReader(f)
-            exchange_rates = {row['date']: row for row in reader}
-            permitted_days_prior = 3
-            lookup_date = requested_date.strftime("%Y-%m-%d")
-            if lookup_date not in exchange_rates:
-                for i in range(1, permitted_days_prior + 1):
-                    lookup_date = (requested_date - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
-                    print(f"Looking for exchange rates for {lookup_date} as {requested_date} not found")
-                    if lookup_date in exchange_rates:
-                        break
-                if lookup_date not in exchange_rates:
-                    raise ValueError(f"No exchange rates found for date {requested_date} or {permitted_days_prior} days prior. Please ensure the exchange rates file contains rates for this date.")
-            return exchange_rates[lookup_date]
-    
-    def _generate_opening_balances_rows(self, source_portfolio_id: str, source_portfolio_currency_code, valuation_date: datetime.date, exchange_rates_file_path: TextIO | None):
-        # get posiitions from the previous day, but value them on the valuation date
-        last_balance_date = (valuation_date - datetime.timedelta(days=1))
-        valuation = self._api_client.get_valuation_on(source_portfolio_id, last_balance_date.strftime("%Y-%m-%d"))
-        exchange_rates = self.get_internal_exchange_rates(exchange_rates_file_path, valuation_date)
-
-        print(f"Loaded valuation for {source_portfolio_id} on {valuation_date} with exchange rates {exchange_rates}")
-        for holding in valuation.get("holdings"):
-            instrument_currency = self._get_currency_for_holding(holding.get("id"))
-            print(holding)
-            print(f"Creating deemed aquisition using holding {holding.get('symbol')} in {instrument_currency} with value {holding.get('value')} from portfolio with currency {source_portfolio_currency_code}")
-            portfolio_currency_to_instrument_currency_exchange_rate = float(exchange_rates[f"{source_portfolio_currency_code}/{instrument_currency}"])
-            aud_to_instrument_currency_exchange_rate = float(exchange_rates[f"AUD/{instrument_currency}"])
-            gbp_to_instrument_currency_exchange_rate = float(exchange_rates[f"GBP/{instrument_currency}"])
-            price_in_source_portfolio_currency = float(holding.get("value")) / float(holding.get("quantity"))
-            price_in_instrument_currency = price_in_source_portfolio_currency * portfolio_currency_to_instrument_currency_exchange_rate
-            amount_in_instrument_currency = holding.get("value") * portfolio_currency_to_instrument_currency_exchange_rate
-
-            yield {
-                self.INTERNAL_SKIP_CASH_TX_FLAG: True,
-                "unique_identifier": f"GENERATED-{holding.get('symbol')}",
-                "transaction_type": "BUY",
-                "transaction_date": valuation_date.strftime("%Y-%m-%d"),
-                "symbol": self._remove_portfolio_qualifier_from_symbol(holding.get("symbol"), source_portfolio_id),
-                "instrument_currency": instrument_currency,
-                "market": holding.get("market"),
-                "quantity": holding.get("quantity"),
-                "brokerage_in_amount_currency": 0,
-                "exchange_rate_aud": aud_to_instrument_currency_exchange_rate,
-                "exchange_rate_gbp": gbp_to_instrument_currency_exchange_rate,
-                "price_in_instrument_currency": price_in_instrument_currency,
-                "amount_in_instrument_currency": amount_in_instrument_currency,
-                "description": "Deemed aquisition at residency commencement"
-            }
-        # cash account valuations are not reliable from the valuation api endpoint, as they
-        # convert from the account currency to the portfolio currency, and back again
-        # so instead, load all the transactions, and total the balance
-        for cash_account in valuation.get("cash_accounts"):
-            transactions = self._api_client.get_cash_account_transactions(cash_account.get('cash_account_id'), "2000-01-01", last_balance_date.strftime("%Y-%m-%d")).get("cash_account_transactions")
-            total_amount = sum(float(t.get("amount")) for t in transactions)
-            last_balance = transactions[0].get("balance")
-            # confusingly value is in the portfolio_currency_code
-            # not the account currency
-            currency_pair = f"{source_portfolio_currency_code}/{cash_account.get('currency_code')}"
-            portfolio_to_cash_account_exchange_rate = float(exchange_rates[currency_pair]) if source_portfolio_currency_code != cash_account.get('currency_code') else 1
-            cash_account_name = self._get_cash_account_name_from_sharesight_cash_account(cash_account.get('name'), cash_account.get('currency_code'))
-            calculated_total_amount = cash_account.get("value") * portfolio_to_cash_account_exchange_rate
-            if (round(calculated_total_amount,2) != round(total_amount,2)):
-                print(f"WARN Calculated total amount {calculated_total_amount} does not match total amount {total_amount} for {cash_account_name}. Sharesight valuation reports will show the calculated total, which does not match the balances shown in the cash account itself.")
-            if (round(total_amount,2) != round(last_balance,2)):
-                print(f"ERROR Total amount {total_amount} does not match last balance {last_balance} for {cash_account_name}. This should not happen!", file=sys.stderr)
-            yield {
-                "unique_identifier": f"GENERATED-{cash_account.get('currency_code')}-{cash_account_name}",
-                "transaction_type": "DEPOSIT",
-                "transaction_date": valuation_date.strftime("%Y-%m-%d"),
-                "amount": total_amount,
-                "amount_currency": cash_account.get("currency_code"),
-                "cash_account": cash_account_name,
-                "description": "Opening Balance"
-            }
-    
-    def import_file(self, file_path: TextIO, portfolio_name: str, country_code: str, delete_existing: bool, min_date: datetime.date, exclude_exdate_transactions_before_min_date, opening_balance_on: datetime.date | None, opening_balance_from: str | None, min_line: int, max_line: int, prices_file_path: TextIO, exchange_rates_file_path: TextIO | None):
+    def import_file(self, file_path, portfolio_name, country_code, options=ImportOptions()):
         opening_balances = []
-        if ((min_date or min_line or max_line) and delete_existing):
+        min_date = options.min_date
+        if ((min_date or options.min_line or options.max_line) and options.delete_existing):
             print(f"You probably didn't want to delete existing trades while restarting/running a specific line of the file. Exiting.", file=sys.stderr)
-            return None;
-        if opening_balance_on and opening_balance_from:
-            portfolio_id,_,portfolio_currency_code = self._get_portfolio_by_name(opening_balance_from)
-            print(f"Generating opening balances on {opening_balance_on} from {opening_balance_from}")
-            opening_balances = list(self._generate_opening_balances_rows(portfolio_id, portfolio_currency_code, opening_balance_on, exchange_rates_file_path))
+            return None
+        if options.opening_balance:
+            opening = options.opening_balance
+            portfolio_id, _, portfolio_currency = self._get_portfolio_by_name(
+                opening.source_portfolio_name
+            )
+            print(
+                f"Generating opening balances on {opening.valuation_date} from "
+                f"{opening.source_portfolio_name}"
+            )
+            opening_balances = OpeningBalanceGenerator(self._api_client).generate(
+                portfolio_id,
+                portfolio_currency,
+                opening.valuation_date,
+                opening.exchange_rates_file_path,
+            )
             # TODO: if custom instrument prices are not synced between the two portfolios, the opening balances will be incorrect
             # not sure how we check this yet
             print('    ' + '\n    '.join(f"{p}" for p in opening_balances))
-            min_date = opening_balance_on
-            
-        self._process_transactions(file_path, portfolio_name, country_code, delete_existing, min_date, exclude_exdate_transactions_before_min_date, min_line, max_line, opening_balances, prices_file_path)
+            min_date = opening.valuation_date
+
+        self._process_transactions(
+            file_path, portfolio_name, country_code, options, min_date, opening_balances
+        )
         
-    def _process_transactions(self, file_path: TextIO, portfolio_name: str, country_code: str, delete_existing: bool, min_date: datetime.date, exclude_exdate_transactions_before_min_date: bool, min_line: int, max_line: int, injected_opening_balances: list[dict], prices_file_path: TextIO):
+    def _process_transactions(self, file_path, portfolio_name, country_code, options,
+                              min_date, injected_opening_balances):
         transactions = load_transactions(
             file_path,
             injected_opening_balances,
             min_date,
-            exclude_exdate_transactions_before_min_date,
-            min_line,
-            max_line,
+            options.exclude_exdate_transactions_before_min_date,
+            options.min_line,
+            options.max_line,
         )
         validate_transactions(transactions, country_code, SUPPORTED_TRANSACTION_TYPES)
-        plan = build_import_plan(transactions, self.INTERNAL_SKIP_CASH_TX_FLAG)
+        plan = build_import_plan(transactions)
         cash_accounts_in_file = self._get_unique_cash_accounts(plan)
         portfolio_id, cash_accounts = self._get_or_create_portfolio(
-            portfolio_name, country_code, cash_accounts_in_file, delete_existing
+            portfolio_name, country_code, cash_accounts_in_file, options.delete_existing
         )
 
         custom_instruments_in_file = self._get_unique_custom_instruments(transactions, portfolio_id)
@@ -178,8 +115,8 @@ class SharesightCsvImporter:
         print(f"Creating custom instruments")
         self._create_custom_instruments(portfolio_id, custom_instruments_in_file)
 
-        if (prices_file_path):
-            self._process_prices(prices_file_path, portfolio_id, country_code)
+        if options.prices_file_path:
+            self._process_prices(options.prices_file_path, portfolio_id, country_code)
         
         executor = ImportExecutor(self._api_client, portfolio_id, country_code, cash_accounts)
         executor.execute(plan)
@@ -226,10 +163,7 @@ class SharesightCsvImporter:
     def _get_cash_account_name_from_sharesight_cash_account(self, cash_account_name: str, cash_account_currency: str):
         # when fetching from cash_accounts api end point, the field is 'currency'
         # when fetching from valuation api end point, the field is 'currency_code'
-        if cash_account_name.endswith(f" ({cash_account_currency})"):
-            return cash_account_name[:-len(f" ({cash_account_currency})")]
-        else:
-            return cash_account_name
+        return normalize_cash_account_name(cash_account_name, cash_account_currency)
 
     def _create_portfolio(self, portfolio_name: str, country_code: str):
         print("Creating portfolio")
@@ -313,7 +247,3 @@ class SharesightCsvImporter:
             response_json = self._api_client.create_custom_investment(custom_investment_data)
         if (response_json and response_json.get("currency_code") != custom_investment_data["currency_code"]):
             print(f"{log_line_prefix}\tWARN Sharesight has set {custom_investment_data['code']} currency code to {response_json.get('currency_code')} based on domicile, but instrument currency is set to {custom_investment_data["currency_code"]}")
-
-    def _get_currency_for_holding(self, holding_id):
-        response_holding = self._api_client.get_holding(holding_id)
-        return response_holding['holding']['instrument']['currency_code']

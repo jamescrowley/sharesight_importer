@@ -3,6 +3,7 @@ from os import getenv
 import argparse
 from sharesight_api_client import SharesightApiClient
 from sharesight_csv_importer import SharesightCsvImporter
+from sharesight_import_options import ImportOptions, OpeningBalanceOptions
 
 def main():
     parser = argparse.ArgumentParser(description='Process some integers.')
@@ -32,5 +33,26 @@ def main():
     print(f"{args}")
     api_client = SharesightApiClient(args.client_id, args.client_secret, args.verbose)
     csv_importer = SharesightCsvImporter(api_client)
-    csv_importer.import_file(args.file_name, args.portfolio_name, args.country_code, args.delete_existing, args.min_date, args.exclude_exdate_transactions_before_min_date, args.opening_balance_on, args.opening_balance_from, args.min_line, args.max_line, args.prices_file_name, args.exchange_rates_file_name) 
+    opening_balance = (
+        OpeningBalanceOptions(
+            valuation_date=args.opening_balance_on,
+            source_portfolio_name=args.opening_balance_from,
+            exchange_rates_file_path=args.exchange_rates_file_name,
+        )
+        if args.opening_balance_on else None
+    )
+    options = ImportOptions(
+        delete_existing=args.delete_existing,
+        min_date=args.min_date,
+        exclude_exdate_transactions_before_min_date=(
+            args.exclude_exdate_transactions_before_min_date
+        ),
+        min_line=args.min_line,
+        max_line=args.max_line,
+        prices_file_path=args.prices_file_name,
+        opening_balance=opening_balance,
+    )
+    csv_importer.import_file(
+        args.file_name, args.portfolio_name, args.country_code, options
+    )
 main()

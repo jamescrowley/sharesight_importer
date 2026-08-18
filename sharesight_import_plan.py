@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from sharesight_csv_input import MergePair, TransactionRow
 
 
+SKIP_CASH_TRANSACTION_FLAG = "skip_cash_account_transaction"
+
+
 @dataclass(frozen=True)
 class PlannedOperation:
     line_number: int
@@ -67,17 +70,17 @@ SUPPORTED_TRANSACTION_TYPES = frozenset(
 )
 
 
-def build_import_plan(transactions, skip_cash_flag):
+def build_import_plan(transactions):
     plan = []
     for transaction in transactions:
         if isinstance(transaction, MergePair):
             plan.append(PlannedMerge(cancel=transaction.cancel, buy=transaction.buy))
             continue
-        plan.extend(_expand_row(transaction, skip_cash_flag))
+        plan.extend(_expand_row(transaction))
     return plan
 
 
-def _expand_row(row, skip_cash_flag):
+def _expand_row(row):
     data = dict(row.data)
     transaction_type = data["transaction_type"]
     if transaction_type in COMPOUND_TRANSACTION_TYPES:
@@ -87,7 +90,7 @@ def _expand_row(row, skip_cash_flag):
 
     policy = TRANSACTION_POLICIES[transaction_type]
     operations = [policy.operation_type(row.line_number, data)]
-    if policy.creates_cash_transaction and not data.get(skip_cash_flag):
+    if policy.creates_cash_transaction and not data.get(SKIP_CASH_TRANSACTION_FLAG):
         operations.append(PlannedCash(row.line_number, data))
 
     accrued_income = float(data.get("accrued_income") or 0)

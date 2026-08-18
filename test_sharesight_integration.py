@@ -384,6 +384,14 @@ class ImporterHttpIntegrationTests(unittest.TestCase):
         )])
         self.assertEqual(self.transport.cash_transactions, [])
 
+    def test_zero_value_capital_operations_are_omitted(self):
+        self.run_import([
+            csv_row(unique_identifier="zero-call", transaction_type="CAPITAL_CALL", amount="0"),
+            csv_row(unique_identifier="zero-return", transaction_type="CAPITAL_RETURN", amount="0"),
+        ])
+        self.assertEqual(self.transport.trades, [])
+        self.assertEqual(self.transport.cash_transactions, [])
+
     def test_filtered_out_custom_instrument_causes_no_setup_mutation(self):
         self.run_import([
             csv_row(unique_identifier="old-custom", transaction_date="2023-01-01", symbol="OLD", market="OTHER",

@@ -37,28 +37,26 @@ class CustomInstrumentSynchronizer:
         self._api_client.delete_custom_instruments(portfolio_id, AUTO_NAME_SUFFIX)
 
     def _instruments_from_transactions(self, transactions, portfolio_id):
-        instrument_values = {
-            (
-                qualify_custom_instrument_symbol(row.data, portfolio_id),
-                row.data.get("symbol_name"),
-                row.data.get("instrument_country_code"),
-                row.data.get("instrument_currency"),
-                row.data.get("symbol_type"),
-            )
-            for row in iter_transaction_rows(transactions)
-            if row.data.get("market", "").lower() == "other"
-            and row.data.get("symbol_name")
-        }
-        return [
-            {
-                "symbol": symbol,
-                "symbol_name": name,
-                "instrument_country_code": country_code,
-                "instrument_currency": currency,
-                "symbol_type": instrument_type,
+        instruments_by_symbol = {}
+        for row in iter_transaction_rows(transactions):
+            data = row.data
+            if data.get("market", "").lower() != "other" or not data.get("symbol_name"):
+                continue
+            instrument = {
+                "symbol": qualify_custom_instrument_symbol(data, portfolio_id),
+                "symbol_name": data.get("symbol_name"),
+                "instrument_country_code": data.get("instrument_country_code"),
+                "instrument_currency": data.get("instrument_currency"),
+                "symbol_type": data.get("symbol_type") or "MANAGED_FUND",
             }
-            for symbol, name, country_code, currency, instrument_type in instrument_values
-        ]
+            existing = instruments_by_symbol.get(instrument["symbol"])
+            if existing is not None and existing != instrument:
+                raise ValueError(
+                    f"Line {row.line_number}: conflicting metadata for custom instrument "
+                    f"{instrument['symbol']}: {existing} versus {instrument}"
+                )
+            instruments_by_symbol[instrument["symbol"]] = instrument
+        return list(instruments_by_symbol.values())
 
     def _sync_instruments(self, portfolio_id, instruments):
         existing_instruments = self._api_client.get_custom_investments(portfolio_id).get(

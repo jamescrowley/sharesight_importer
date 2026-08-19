@@ -91,7 +91,7 @@ class TestSharesightCsvImporter(unittest.TestCase):
 
         self.importer = SharesightCsvImporter(self.mock_api_client)
 
-    def _run_import(self, csv_data, portfolio_name=PORTFOLIO_NAME, country_code=COUNTRY_CODE, delete_existing=False, min_date=None, exclude_exdate_transactions_before_min_date=None, opening_balances_csv_data=None, min_line=None, max_line=None, prices_csv_data=None):
+    def _run_import(self, csv_data, portfolio_name=PORTFOLIO_NAME, country_code=COUNTRY_CODE, delete_existing=False, min_date=None, exclude_exdate_transactions_before_min_date=None, opening_balances_csv_data=None, residency_reset_csv_data=None, min_line=None, max_line=None, prices_csv_data=None):
         """Helper to run the import process with mock file."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -99,10 +99,13 @@ class TestSharesightCsvImporter(unittest.TestCase):
             transactions_path.write_text(csv_data, encoding="utf-8")
             prices_path = temp_path / "prices.csv" if prices_csv_data else None
             opening_balances_path = temp_path / "opening-balances.csv" if opening_balances_csv_data else None
+            residency_reset_path = temp_path / "residency-reset.csv" if residency_reset_csv_data else None
             if prices_path:
                 prices_path.write_text(prices_csv_data, encoding="utf-8")
             if opening_balances_path:
                 opening_balances_path.write_text(opening_balances_csv_data, encoding="utf-8")
+            if residency_reset_path:
+                residency_reset_path.write_text(residency_reset_csv_data, encoding="utf-8")
             options = ImportOptions(
                 delete_existing=delete_existing,
                 min_date=min_date,
@@ -111,6 +114,7 @@ class TestSharesightCsvImporter(unittest.TestCase):
                 max_line=max_line,
                 prices_file_path=prices_path,
                 opening_balances_file_path=opening_balances_path,
+                residency_reset_file_path=residency_reset_path,
             )
             self.importer.import_file(
                 transactions_path, portfolio_name, country_code, options
@@ -257,6 +261,32 @@ GENERATED-CASH-GBP-Source GBP Acc,DEPOSIT,2023-01-01,,,,,1000,GBP,Source GBP Acc
         self.assertEqual(len(cash_calls), 1)
         self.assertEqual(cash_calls[0].args[1]["foreign_identifier"], "GENERATED-CASH-GBP-Source GBP Acc")
         self.mock_api_client.get_valuation_on.assert_not_called()
+
+    def test_residency_reset_is_inserted_without_cash_movements(self):
+        csv_data = """unique_identifier,transaction_type,transaction_date,symbol,market,quantity,price_in_instrument_currency,amount,amount_currency,cash_account,description,instrument_currency,exchange_rate_gbp,amount_in_instrument_currency
+history-buy,BUY,2020-01-01,VUSA,LSE,10,4,40,GBP,Broker,Historical buy,GBP,1,40
+post-sale,SELL,2025-01-01,VUSA,LSE,1,6,6,GBP,Broker,Later sale,GBP,1,6
+"""
+        reset_csv = """unique_identifier,transaction_type,transaction_date,symbol,market,quantity,price_in_instrument_currency,instrument_currency,exchange_rate_aud,exchange_rate_gbp,amount_in_instrument_currency,amount_in_aud,amount_in_gbp,skip_cash_account_transaction
+reset-sell,SELL,2024-06-30,VUSA,LSE,10,5,GBP,0.5,1,50,100,50,true
+reset-buy,BUY,2024-07-01,VUSA,LSE,10,5,GBP,0.5,1,50,100,50,true
+"""
+
+        self._run_import(csv_data, residency_reset_csv_data=reset_csv)
+
+        trade_ids = [
+            item.args[0]["unique_identifier"]
+            for item in self.mock_api_client.try_create_trade.call_args_list
+        ]
+        self.assertEqual(
+            trade_ids,
+            ["history-buy", "reset-sell", "reset-buy", "post-sale"],
+        )
+        cash_ids = [
+            item.args[1]["foreign_identifier"]
+            for item in self.mock_api_client.try_create_cash_transaction.call_args_list
+        ]
+        self.assertEqual(cash_ids, ["history-buy", "post-sale"])
 
 
     def test_date_filtering(self):

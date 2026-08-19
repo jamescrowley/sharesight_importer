@@ -52,6 +52,7 @@ Useful optional arguments:
 ```text
 --prices-file-name prices.csv       Import custom-instrument prices
 --opening-balances-file-name FILE   Prepend a frozen opening-balance CSV
+--residency-reset-file-name FILE    Insert a frozen residency reset into full history
 --min-date YYYY-MM-DD               Skip earlier transactions
 --min-line N / --max-line N         Process a source line range (header is line 1)
 --exclude-exdate-transactions-before-min-date
@@ -84,6 +85,33 @@ uv run python __main__.py \
 ```
 
 All frozen rows must share one date and contain only non-cash `BUY` rows or cash `DEPOSIT` rows. The importer always includes every opening row. Ordinary rows on the same date are allowed; earlier ordinary rows are rejected before any target portfolio setup. Line filters apply only to the ordinary transaction file. If `--min-date` is also supplied, it must equal the frozen opening date.
+
+### Australian residency reset with complete history
+
+For a portfolio containing its complete pre-residency transaction history, a separate reset export can crystallise each holding immediately before Australian residency and create its deemed-acquisition parcel on the commencement date:
+
+```sh
+uv run python __main__.py \
+  export-residency-reset \
+  --source-portfolio-name "Existing Portfolio" \
+  --residency-date 2025-07-01 \
+  --exchange-rates-file-name exchange_rates.csv \
+  --output-file residency-reset-2025-07-01.csv
+```
+
+The export contains an adjacent pair for every holding: a synthetic `SELL` dated one day before residency and a `BUY` dated on the residency date. Both legs have identical quantity, price and converted values, zero brokerage, and `skip_cash_account_transaction=true`, so they do not create cash-account transactions.
+
+Import the complete transaction history and the frozen reset together:
+
+```sh
+uv run python __main__.py \
+  import -p "Australian Portfolio" -f complete-history.csv -c AU \
+  --residency-reset-file-name residency-reset-2025-07-01.csv
+```
+
+The importer inserts the reset between pre-residency and residency-date transactions. Before any portfolio setup, it replays quantity-changing rows from the complete history and requires them to match the exported reset quantities. Buys, opening balances, bonus issues, splits, and merger buys add units; sells, cancellations, consolidations, and merger cancellations remove units. In this bespoke CSV, split and consolidation quantities represent the number of units added or removed rather than the resulting balance. Microscopic differences within one ten-millionth of the peak holding quantity are reported as rounding warnings and the frozen Sharesight valuation remains authoritative; larger differences stop the import. Date and line filters are prohibited because quantity reconciliation requires complete history.
+
+The pre-residency history in this single portfolio is intended for performance reporting. Australian tax reports should start on the residency date so the prior-day synthetic disposals and pre-residency income are excluded. Confirm the chosen residency date and deemed-acquisition valuation with an appropriate tax adviser.
 
 ## CSV inputs
 

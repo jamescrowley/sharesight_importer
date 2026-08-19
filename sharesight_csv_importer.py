@@ -16,6 +16,7 @@ from sharesight_import_plan import (
     build_import_plan,
 )
 from sharesight_opening_balances import normalize_cash_account_name
+from sharesight_residency_reset import load_and_validate_residency_reset
 
 
 class SharesightCsvImporter:
@@ -25,7 +26,19 @@ class SharesightCsvImporter:
 
     def import_file(self, file_path, portfolio_name, country_code, options=ImportOptions()):
         opening_balances = []
+        inject_before_date = None
         min_date = options.min_date
+        if options.opening_balances_file_path and options.residency_reset_file_path:
+            raise ValueError(
+                "Opening balances and a residency reset cannot be imported together"
+            )
+        if options.residency_reset_file_path and (
+            options.min_date or options.min_line or options.max_line
+        ):
+            raise ValueError(
+                "A residency reset requires the complete transaction history; "
+                "date and line filters are not allowed"
+            )
         if (
             min_date or options.min_line or options.max_line
         ) and options.delete_existing:
@@ -54,6 +67,13 @@ class SharesightCsvImporter:
             opening_balances = [row.data for row in opening_rows]
             min_date = opening_date
 
+        if options.residency_reset_file_path:
+            reset_rows, residency_date = load_and_validate_residency_reset(
+                options.residency_reset_file_path, file_path
+            )
+            opening_balances = [row.data for row in reset_rows]
+            inject_before_date = residency_date
+
         self._process_transactions(
             file_path,
             portfolio_name,
@@ -61,6 +81,7 @@ class SharesightCsvImporter:
             options,
             min_date,
             opening_balances,
+            inject_before_date,
         )
 
     def _process_transactions(
@@ -71,6 +92,7 @@ class SharesightCsvImporter:
         options,
         min_date,
         injected_opening_balances,
+        inject_before_date,
     ):
         transactions = load_transactions(
             file_path,
@@ -79,6 +101,7 @@ class SharesightCsvImporter:
             options.exclude_exdate_transactions_before_min_date,
             options.min_line,
             options.max_line,
+            inject_before_date,
         )
         validate_transactions(transactions, country_code, SUPPORTED_TRANSACTION_TYPES)
         plan = build_import_plan(transactions)

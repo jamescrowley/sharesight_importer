@@ -12,3 +12,4 @@ class ImportOptions:
     max_line: int | None = None
     prices_file_path: str | PathLike | None = None
     opening_balances_file_path: str | PathLike | None = None
+    residency_reset_file_path: str | PathLike | None = None

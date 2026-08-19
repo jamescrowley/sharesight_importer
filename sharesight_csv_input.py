@@ -16,6 +16,7 @@ TRANSACTION_CSV_FIELDS = [
     "opening_balance_source_portfolio", "opening_balance_source_currency",
     "opening_balance_source_value", "opening_balance_valuation_date",
     "opening_balance_exchange_rate_date",
+    "residency_reset_date",
 ]
 
 
@@ -41,7 +42,8 @@ def iter_transaction_rows(transactions):
 
 
 def load_transactions(file_path, injected_rows, min_date,
-                      exclude_exdate_transactions_before_min_date, min_line, max_line):
+                      exclude_exdate_transactions_before_min_date, min_line, max_line,
+                      inject_before_date=None):
     with open(file_path, mode="r", encoding="utf-8-sig") as file:
         reader = csv.DictReader(file)
         print(f"Found columns in CSV: {reader.fieldnames}")
@@ -90,7 +92,17 @@ def load_transactions(file_path, injected_rows, min_date,
         row_index += 1
 
     generated_rows = [TransactionRow(1, dict(data_row)) for data_row in injected_rows]
-    return generated_rows + transactions
+    if inject_before_date is None:
+        return generated_rows + transactions
+    before_boundary = [
+        transaction for transaction in transactions
+        if _transaction_date(transaction) < inject_before_date
+    ]
+    from_boundary = [
+        transaction for transaction in transactions
+        if _transaction_date(transaction) >= inject_before_date
+    ]
+    return before_boundary + generated_rows + from_boundary
 
 
 def load_frozen_opening_balances(file_path):
@@ -163,6 +175,11 @@ def _parse_date(row, field):
         raise ValueError(
             f"Line {row.line_number}: invalid {field} {row.data.get(field)!r}"
         ) from error
+
+
+def _transaction_date(transaction):
+    row = transaction.cancel if isinstance(transaction, MergePair) else transaction
+    return _parse_date(row, "transaction_date")
 
 
 def validate_transactions(transactions, country_code, supported_transaction_types):

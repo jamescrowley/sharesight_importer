@@ -33,7 +33,7 @@ class OpeningBalanceExporter:
         return rows
 
     def generate(self, source_portfolio_id, source_portfolio_name, source_currency,
-                 valuation_date, exchange_rates_file_path):
+                 valuation_date, exchange_rates_file_path, include_cash=True):
         last_balance_date = valuation_date - datetime.timedelta(days=1)
         valuation = self._api_client.get_valuation_on(
             source_portfolio_id, last_balance_date.isoformat()
@@ -60,12 +60,13 @@ class OpeningBalanceExporter:
             )
             for holding in valuation.get("holdings", [])
         ]
-        rows.extend(
-            self._cash_row(
-                account, source_currency, valuation_date, last_balance_date, rates, audit
+        if include_cash:
+            rows.extend(
+                self._cash_row(
+                    account, source_currency, valuation_date, last_balance_date, rates, audit
+                )
+                for account in valuation.get("cash_accounts", [])
             )
-            for account in valuation.get("cash_accounts", [])
-        )
         return rows
 
     def _holding_row(self, holding, source_portfolio_id, source_currency,

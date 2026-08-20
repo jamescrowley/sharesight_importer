@@ -3,7 +3,6 @@ import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from sharesight_console import warn
 from sharesight_csv_input import TRANSACTION_CSV_FIELDS, _read_rows, _parse_date
 from sharesight_import_plan import SKIP_CASH_TRANSACTION_FLAG
 from sharesight_opening_balances import OpeningBalanceExporter
@@ -127,7 +126,6 @@ def _validate_pair(sell, buy):
 
 def _validate_quantities(ordinary_rows, pairs, residency_date):
     quantities = {}
-    peak_quantities = {}
     for row in ordinary_rows:
         if _parse_date(row, "transaction_date") >= residency_date:
             continue
@@ -144,40 +142,27 @@ def _validate_quantities(ordinary_rows, pairs, residency_date):
             quantities[key] = quantities.get(key, Decimal()) - quantity
         else:
             quantities[key] = quantities.get(key, Decimal()) + quantity
-        peak_quantities[key] = max(
-            peak_quantities.get(key, Decimal()), abs(quantities[key])
-        )
 
     reset_quantities = {
         _holding_key(sell.data): _quantity(sell)
         for sell, _ in pairs
     }
-    material_differences = []
+    differences = []
     for key in sorted(set(quantities) | set(reset_quantities)):
         history_quantity = quantities.get(key, Decimal())
         reset_quantity = reset_quantities.get(key, Decimal())
         difference = abs(history_quantity - reset_quantity)
         if difference == 0:
             continue
-        tolerance = max(
-            Decimal("0.00000001"),
-            peak_quantities.get(key, abs(reset_quantity)) * Decimal("0.0000001"),
-        )
-        message = (
+        differences.append(
             f"{key}: history={history_quantity}, reset={reset_quantity}, "
-            f"difference={difference}, tolerance={tolerance}"
+            f"difference={difference}"
         )
-        if difference <= tolerance:
-            warn(
-                "Residency-reset quantity has a small Sharesight/corporate-action "
-                f"rounding residual; using the frozen reset quantity. {message}"
-            )
-        else:
-            material_differences.append(message)
-    if material_differences:
+    if differences:
         raise ValueError(
-            "Residency-reset quantities do not match transaction history: "
-            + "; ".join(material_differences)
+            "Residency-reset quantities must exactly match the positions replayed "
+            "from transaction history. Correct or regenerate the frozen reset CSV "
+            "before importing: " + "; ".join(differences)
         )
 
 

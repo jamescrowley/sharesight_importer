@@ -268,6 +268,48 @@ class ImporterHttpIntegrationTests(unittest.TestCase):
         self.assertEqual([t["unique_identifier"] for t in self.transport.trades], ["retained-1_CALL"])
         self.assertEqual(self.transport.cash_transactions, [])
 
+    def test_ignore_retained_income_skips_both_retained_transaction_types(self):
+        self.run_import([
+            csv_row(unique_identifier="buy-1"),
+            csv_row(
+                unique_identifier="retained-1",
+                transaction_type="RETAINED_NET_INCOME",
+                symbol="PRIVATE",
+                market="OTHER",
+                symbol_name="Ignored Private Fund",
+                symbol_type="MANAGED_FUND",
+                quantity="0",
+                amount="12",
+                amount_in_instrument_currency="12",
+                amount_in_gbp="12",
+                amount_in_aud="24",
+            ),
+            csv_row(
+                unique_identifier="equalisation-1",
+                transaction_type="RETAINED_EQUALISATION",
+                symbol="PRIVATE",
+                market="OTHER",
+                symbol_name="Ignored Private Fund",
+                symbol_type="MANAGED_FUND",
+                quantity="0",
+                amount="8",
+                amount_in_instrument_currency="8",
+                amount_in_gbp="8",
+                amount_in_aud="16",
+            ),
+        ], ignore_retained_income=True)
+
+        self.assertEqual(
+            [trade["unique_identifier"] for trade in self.transport.trades],
+            ["buy-1"],
+        )
+        self.assertEqual(self.transport.payouts, [])
+        self.assertEqual(
+            [transaction["foreign_identifier"] for transaction in self.transport.cash_transactions],
+            ["buy-1"],
+        )
+        self.assertEqual(self.transport.custom_investments, [])
+
     def test_custom_instrument_is_qualified_and_used_by_trade(self):
         self.run_import([csv_row(
             unique_identifier="custom-1", symbol="PRIVATE", market="OTHER", symbol_name="Synthetic Private Fund",

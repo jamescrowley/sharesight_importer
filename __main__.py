@@ -28,6 +28,14 @@ def build_parser():
     import_parser.add_argument("-pf", "--prices-file-name")
     import_parser.add_argument("-obf", "--opening-balances-file-name")
     import_parser.add_argument("-rrf", "--residency-reset-file-name")
+    import_parser.add_argument(
+        "--ignore-retained-income",
+        action="store_true",
+        help=(
+            "Skip RETAINED_NET_INCOME and RETAINED_EQUALISATION rows "
+            "without creating Sharesight records"
+        ),
+    )
     import_parser.add_argument("-c", "--country-code", choices=("AU", "GB"), required=True)
     import_parser.add_argument("-r", "--delete-existing", action=argparse.BooleanOptionalAction)
     import_parser.add_argument("-d", "--min-date", type=_date)
@@ -85,6 +93,7 @@ def main(argv=None):
         prices_file_path=args.prices_file_name,
         opening_balances_file_path=args.opening_balances_file_name,
         residency_reset_file_path=args.residency_reset_file_name,
+        ignore_retained_income=args.ignore_retained_income,
     )
     return SharesightCsvImporter(api_client).import_file(
         args.file_name, args.portfolio_name, args.country_code, options

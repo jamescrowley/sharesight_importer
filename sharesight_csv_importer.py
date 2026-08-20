@@ -11,6 +11,7 @@ from sharesight_custom_instruments import CustomInstrumentSynchronizer
 from sharesight_import_executor import ImportExecutor
 from sharesight_import_options import ImportOptions
 from sharesight_import_plan import (
+    COMPOUND_TRANSACTION_TYPES,
     PlannedCash,
     SUPPORTED_TRANSACTION_TYPES,
     build_import_plan,
@@ -103,6 +104,20 @@ class SharesightCsvImporter:
             options.max_line,
             inject_before_date,
         )
+        if options.ignore_retained_income:
+            retained_count = sum(
+                self._is_retained_transaction(transaction)
+                for transaction in transactions
+            )
+            transactions = [
+                transaction for transaction in transactions
+                if not self._is_retained_transaction(transaction)
+            ]
+            if retained_count:
+                print(
+                    f"Ignoring {retained_count} retained income/equalisation "
+                    "transaction(s)"
+                )
         validate_transactions(transactions, country_code, SUPPORTED_TRANSACTION_TYPES)
         plan = build_import_plan(transactions)
         required_cash_accounts = self._required_cash_accounts(plan)
@@ -119,6 +134,11 @@ class SharesightCsvImporter:
         ImportExecutor(
             self._api_client, portfolio_id, country_code, cash_accounts
         ).execute(plan)
+
+    @staticmethod
+    def _is_retained_transaction(transaction):
+        data = getattr(transaction, "data", None)
+        return bool(data) and data.get("transaction_type") in COMPOUND_TRANSACTION_TYPES
 
     @staticmethod
     def _required_cash_accounts(plan):

@@ -3,7 +3,7 @@ import datetime
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from sharesight_csv_input import load_transactions
 from sharesight_residency_reset import (
@@ -108,7 +108,7 @@ class ResidencyResetTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "history=29, reset=30"):
                 load_and_validate_residency_reset(reset_path, transactions_path)
 
-    def test_tiny_scale_relative_residual_warns_and_uses_frozen_quantity(self):
+    def test_tiny_scale_relative_residual_is_rejected(self):
         transactions = (
             "unique_identifier,transaction_type,transaction_date,symbol,market,quantity\n"
             "buy,BUY,2020-01-01,FUND,LSE,100000\n"
@@ -122,11 +122,11 @@ class ResidencyResetTests(unittest.TestCase):
             reset_path.write_text(
                 reset_pair(symbol="FUND", quantity="0.002"), encoding="utf-8"
             )
-            with patch("sharesight_residency_reset.warn") as warning:
+            with self.assertRaisesRegex(
+                ValueError,
+                "must exactly match.*Correct or regenerate.*history=0, reset=0.002",
+            ):
                 load_and_validate_residency_reset(reset_path, transactions_path)
-
-        warning.assert_called_once()
-        self.assertIn("rounding residual", warning.call_args.args[0])
 
     def test_reset_is_inserted_between_pre_and_post_residency_rows(self):
         with tempfile.TemporaryDirectory() as directory:

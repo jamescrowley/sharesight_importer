@@ -5,12 +5,12 @@ from pathlib import Path
 
 from sharesight_csv_input import TRANSACTION_CSV_FIELDS, _read_rows, _parse_date
 from sharesight_import_plan import SKIP_CASH_TRANSACTION_FLAG
-from sharesight_opening_balances import OpeningBalanceExporter
+from sharesight_portfolio_valuation import PortfolioValuationReader
 
 
 class ResidencyResetExporter:
     def __init__(self, api_client):
-        self._opening_exporter = OpeningBalanceExporter(api_client)
+        self._valuation_reader = PortfolioValuationReader(api_client)
 
     def export(self, source_portfolio_name, residency_date, exchange_rates_file_path,
                output_file_path, overwrite=False):
@@ -20,10 +20,10 @@ class ResidencyResetExporter:
                 f"Residency-reset output already exists: {output_path}. "
                 "Use --overwrite to replace it"
             )
-        portfolio = self._opening_exporter._find_portfolio(source_portfolio_name)
-        holding_rows = self._opening_exporter.generate(
+        portfolio = self._valuation_reader.find_portfolio(source_portfolio_name)
+        holding_rows = self._valuation_reader.generate_holding_rows(
             portfolio["id"], portfolio["name"], portfolio["currency_code"],
-            residency_date, exchange_rates_file_path, include_cash=False,
+            residency_date, exchange_rates_file_path,
         )
         rows = []
         sale_date = residency_date - datetime.timedelta(days=1)

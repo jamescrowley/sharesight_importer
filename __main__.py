@@ -5,7 +5,6 @@ from os import getenv
 from sharesight_api_client import SharesightApiClient
 from sharesight_csv_importer import SharesightCsvImporter
 from sharesight_import_options import ImportOptions
-from sharesight_opening_balances import OpeningBalanceExporter
 from sharesight_residency_reset import ResidencyResetExporter
 
 
@@ -26,7 +25,6 @@ def build_parser():
     import_parser.add_argument("-p", "--portfolio-name", required=True)
     import_parser.add_argument("-f", "--file-name", required=True)
     import_parser.add_argument("-pf", "--prices-file-name")
-    import_parser.add_argument("-obf", "--opening-balances-file-name")
     import_parser.add_argument("-rrf", "--residency-reset-file-name")
     import_parser.add_argument(
         "--ignore-retained-income",
@@ -46,13 +44,6 @@ def build_parser():
     )
     import_parser.add_argument("-x", "--max-line", type=int)
 
-    export_parser = commands.add_parser("export-opening-balances", parents=[common])
-    export_parser.add_argument("--source-portfolio-name", required=True)
-    export_parser.add_argument("--valuation-date", type=_date, required=True)
-    export_parser.add_argument("--exchange-rates-file-name", required=True)
-    export_parser.add_argument("--output-file", required=True)
-    export_parser.add_argument("--overwrite", action="store_true")
-
     reset_parser = commands.add_parser("export-residency-reset", parents=[common])
     reset_parser.add_argument("--source-portfolio-name", required=True)
     reset_parser.add_argument("--residency-date", type=_date, required=True)
@@ -65,14 +56,6 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     api_client = SharesightApiClient(args.client_id, args.client_secret, args.verbose)
-    if args.command == "export-opening-balances":
-        return OpeningBalanceExporter(api_client).export(
-            args.source_portfolio_name,
-            args.valuation_date,
-            args.exchange_rates_file_name,
-            args.output_file,
-            args.overwrite,
-        )
     if args.command == "export-residency-reset":
         return ResidencyResetExporter(api_client).export(
             args.source_portfolio_name,
@@ -91,7 +74,6 @@ def main(argv=None):
         min_line=args.min_line,
         max_line=args.max_line,
         prices_file_path=args.prices_file_name,
-        opening_balances_file_path=args.opening_balances_file_name,
         residency_reset_file_path=args.residency_reset_file_name,
         ignore_retained_income=args.ignore_retained_income,
     )

@@ -2,9 +2,7 @@ import sys
 
 from sharesight_api_client import SharesightApiClient
 from sharesight_csv_input import (
-    load_frozen_opening_balances,
     load_transactions,
-    validate_opening_boundary,
     validate_transactions,
 )
 from sharesight_custom_instruments import CustomInstrumentSynchronizer
@@ -16,8 +14,12 @@ from sharesight_import_plan import (
     SUPPORTED_TRANSACTION_TYPES,
     build_import_plan,
 )
-from sharesight_opening_balances import normalize_cash_account_name
 from sharesight_residency_reset import load_and_validate_residency_reset
+
+
+def normalize_cash_account_name(name, currency):
+    suffix = f" ({currency})"
+    return name[:-len(suffix)] if name.endswith(suffix) else name
 
 
 class SharesightCsvImporter:
@@ -29,10 +31,6 @@ class SharesightCsvImporter:
         opening_balances = []
         inject_before_date = None
         min_date = options.min_date
-        if options.opening_balances_file_path and options.residency_reset_file_path:
-            raise ValueError(
-                "Opening balances and a residency reset cannot be imported together"
-            )
         if options.residency_reset_file_path and (
             options.min_date or options.min_line or options.max_line
         ):
@@ -49,24 +47,6 @@ class SharesightCsvImporter:
                 file=sys.stderr,
             )
             return None
-
-        if options.opening_balances_file_path:
-            opening_rows, opening_date = load_frozen_opening_balances(
-                options.opening_balances_file_path
-            )
-            if min_date is not None and min_date != opening_date:
-                raise ValueError(
-                    f"--min-date must equal opening-balance date {opening_date} when a "
-                    "frozen opening-balance file is supplied"
-                )
-            validate_opening_boundary(
-                file_path,
-                opening_rows,
-                opening_date,
-                options.exclude_exdate_transactions_before_min_date,
-            )
-            opening_balances = [row.data for row in opening_rows]
-            min_date = opening_date
 
         if options.residency_reset_file_path:
             reset_rows, residency_date = load_and_validate_residency_reset(

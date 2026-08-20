@@ -12,7 +12,6 @@ The code is tailored to Australian (`AU`) and United Kingdom (`GB`) portfolios a
 - Cash activity: `DEPOSIT`, `WITHDRAWAL`, `INTEREST_PAYMENT`, `INTEREST_CHARGED`, `FEE`, and `FEE_REIMBURSEMENT`.
 - Sharesight custom instruments (`market=OTHER`) and a separate custom-price CSV.
 - Date and source-line filters for restarting or importing part of a file.
-- Frozen opening-balance CSVs exported from an existing Sharesight portfolio using a local exchange-rate CSV.
 
 ## Requirements
 
@@ -51,7 +50,6 @@ Useful optional arguments:
 
 ```text
 --prices-file-name prices.csv       Import custom-instrument prices
---opening-balances-file-name FILE   Prepend a frozen opening-balance CSV
 --residency-reset-file-name FILE    Insert a frozen residency reset into full history
 --ignore-retained-income            Skip retained net income and retained equalisation rows
 --min-date YYYY-MM-DD               Skip earlier transactions
@@ -65,29 +63,6 @@ Useful optional arguments:
 `--delete-existing` is destructive: it deletes portfolio cash transactions, holdings, and importer-created custom instruments before recreating data. The importer refuses to combine this option with date or line filters.
 
 Use `--ignore-retained-income` when retained income and retained equalisation should not be represented in the destination portfolio (for example, where the destination's tax treatment does not require them). It skips both `RETAINED_NET_INCOME` and `RETAINED_EQUALISATION` rows before custom-instrument synchronization and transaction planning. Other income types are unaffected.
-
-Opening balances use an explicit two-step workflow. First export and inspect a frozen CSV; this reads the source portfolio but does not mutate a portfolio:
-
-```sh
-uv run python __main__.py \
-  export-opening-balances \
-  --source-portfolio-name "Existing Portfolio" \
-  --valuation-date 2025-07-01 \
-  --exchange-rates-file-name exchange_rates.csv \
-  --output-file opening-balances-2025-07-01.csv
-```
-
-The exporter refuses to replace an existing file unless `--overwrite` is supplied. It values the source portfolio at the end of the preceding day, treats its native-currency value as authoritative, and records the actual exchange-rate date used (up to three days before the requested date).
-
-Then pass the frozen file to the normal import:
-
-```sh
-uv run python __main__.py \
-  import -p "New Portfolio" -f transactions.csv -c AU \
-  --opening-balances-file-name opening-balances-2025-07-01.csv
-```
-
-All frozen rows must share one date and contain only non-cash `BUY` rows or cash `DEPOSIT` rows. The importer always includes every opening row. Ordinary rows on the same date are allowed; earlier ordinary rows are rejected before any target portfolio setup. Line filters apply only to the ordinary transaction file. If `--min-date` is also supplied, it must equal the frozen opening date.
 
 ### Australian residency reset with complete history
 

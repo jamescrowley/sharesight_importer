@@ -1,42 +1,33 @@
 import csv
 import datetime
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
 
-from sharesight_csv_input import TRANSACTION_CSV_FIELDS
-from sharesight_console import warn
 from sharesight_custom_instruments import AUTO_NAME_SUFFIX, remove_portfolio_qualifier
 from sharesight_import_plan import SKIP_CASH_TRANSACTION_FLAG
 
 
-class OpeningBalanceExporter:
+class PortfolioValuationReader:
     def __init__(self, api_client):
         self._api_client = api_client
 
-    def export(self, source_portfolio_name, valuation_date, exchange_rates_file_path,
-               output_file_path, overwrite=False):
-        output_path = Path(output_file_path)
-        if output_path.exists() and not overwrite:
-            raise FileExistsError(
-                f"Opening-balance output already exists: {output_path}. Use --overwrite to replace it"
-            )
-        portfolio = self._find_portfolio(source_portfolio_name)
-        rows = self.generate(
-            portfolio["id"], portfolio["name"], portfolio["currency_code"],
-            valuation_date, exchange_rates_file_path,
-        )
-        mode = "w" if overwrite else "x"
-        with output_path.open(mode, encoding="utf-8", newline="") as output_file:
-            writer = csv.DictWriter(output_file, fieldnames=TRANSACTION_CSV_FIELDS)
-            writer.writeheader()
-            writer.writerows(rows)
-        return rows
+    def find_portfolio(self, name):
+        portfolios = self._api_client.get_portfolios().get("portfolios", [])
+        portfolio = next((item for item in portfolios if item["name"] == name), None)
+        if portfolio is None:
+            raise ValueError(f"Source portfolio not found: {name}")
+        return portfolio
 
-    def generate(self, source_portfolio_id, source_portfolio_name, source_currency,
-                 valuation_date, exchange_rates_file_path, include_cash=True):
-        last_balance_date = valuation_date - datetime.timedelta(days=1)
+    def generate_holding_rows(
+        self,
+        source_portfolio_id,
+        source_portfolio_name,
+        source_currency,
+        valuation_date,
+        exchange_rates_file_path,
+    ):
         valuation = self._api_client.get_valuation_on(
-            source_portfolio_id, last_balance_date.isoformat()
+            source_portfolio_id,
+            (valuation_date - datetime.timedelta(days=1)).isoformat(),
         )
         rates, selected_rate_date = load_exchange_rates(
             exchange_rates_file_path, valuation_date
@@ -53,24 +44,29 @@ class OpeningBalanceExporter:
             "opening_balance_valuation_date": valuation_date.isoformat(),
             "opening_balance_exchange_rate_date": selected_rate_date.isoformat(),
         }
-        rows = [
+        return [
             self._holding_row(
-                holding, source_portfolio_id, source_currency, valuation_date,
-                rates, custom_instruments, audit,
+                holding,
+                source_portfolio_id,
+                source_currency,
+                valuation_date,
+                rates,
+                custom_instruments,
+                audit,
             )
             for holding in valuation.get("holdings", [])
         ]
-        if include_cash:
-            rows.extend(
-                self._cash_row(
-                    account, source_currency, valuation_date, last_balance_date, rates, audit
-                )
-                for account in valuation.get("cash_accounts", [])
-            )
-        return rows
 
-    def _holding_row(self, holding, source_portfolio_id, source_currency,
-                     valuation_date, rates, custom_instruments, audit):
+    def _holding_row(
+        self,
+        holding,
+        source_portfolio_id,
+        source_currency,
+        valuation_date,
+        rates,
+        custom_instruments,
+        audit,
+    ):
         instrument = self._api_client.get_holding(holding["id"])["holding"]["instrument"]
         instrument_currency = instrument["currency_code"]
         source_value = _decimal(holding["value"], "holding value")
@@ -110,54 +106,16 @@ class OpeningBalanceExporter:
         }
         if holding["market"].lower() == "other":
             custom = custom_instruments.get(holding["symbol"], {})
-            row.update({
-                "symbol_name": str(custom.get("name", "")).removesuffix(
-                    f" {AUTO_NAME_SUFFIX}"
-                ),
-                "instrument_country_code": custom.get("country_code", ""),
-                "symbol_type": custom.get("investment_type", ""),
-            })
+            row.update(
+                {
+                    "symbol_name": str(custom.get("name", "")).removesuffix(
+                        f" {AUTO_NAME_SUFFIX}"
+                    ),
+                    "instrument_country_code": custom.get("country_code", ""),
+                    "symbol_type": custom.get("investment_type", ""),
+                }
+            )
         return row
-
-    def _cash_row(self, account, source_currency, valuation_date,
-                  last_balance_date, rates, audit):
-        transactions = self._api_client.get_cash_account_transactions(
-            account["cash_account_id"], "2000-01-01", last_balance_date.isoformat()
-        ).get("cash_account_transactions", [])
-        total = sum((_decimal(item["amount"], "cash transaction amount") for item in transactions), Decimal())
-        account_currency = account["currency_code"]
-        source_value = _decimal(account["value"], "cash account value")
-        expected_total = source_value * _rate(rates, source_currency, account_currency)
-        if _cents(expected_total) != _cents(total):
-            warn(
-                f"Cash account {account['name']} transactions total {total} does not match "
-                f"source valuation {expected_total}"
-            )
-        if transactions and _cents(total) != _cents(_decimal(transactions[0]["balance"], "cash balance")):
-            raise ValueError(
-                f"Cash account {account['name']} transaction total does not match its latest balance"
-            )
-        account_name = normalize_cash_account_name(account["name"], account_currency)
-        return {
-            **audit,
-            "unique_identifier": f"GENERATED-CASH-{account_currency}-{account_name}",
-            "transaction_type": "DEPOSIT",
-            "transaction_date": valuation_date.isoformat(),
-            "amount": _plain(total),
-            "amount_currency": account_currency,
-            "cash_account": account_name,
-            "description": "Opening Balance",
-            "opening_balance_source_value": _plain(source_value),
-            "amount_in_aud": _plain(_convert_from_instrument(total, rates, "AUD", account_currency)),
-            "amount_in_gbp": _plain(_convert_from_instrument(total, rates, "GBP", account_currency)),
-        }
-
-    def _find_portfolio(self, name):
-        portfolios = self._api_client.get_portfolios().get("portfolios", [])
-        portfolio = next((item for item in portfolios if item["name"] == name), None)
-        if portfolio is None:
-            raise ValueError(f"Source portfolio not found: {name}")
-        return portfolio
 
 
 def load_exchange_rates(file_path, requested_date):
@@ -185,7 +143,9 @@ def _convert_from_instrument(value, rates, target_currency, instrument_currency)
     return value / _rate(rates, target_currency, instrument_currency)
 
 
-def _validate_cross_rate(source_value, converted_value, rates, source_currency, target_currency):
+def _validate_cross_rate(
+    source_value, converted_value, rates, source_currency, target_currency
+):
     if source_currency == target_currency:
         direct_value = source_value
     else:
@@ -210,8 +170,3 @@ def _cents(value):
 
 def _plain(value):
     return format(value, "f")
-
-
-def normalize_cash_account_name(name, currency):
-    suffix = f" ({currency})"
-    return name[:-len(suffix)] if name.endswith(suffix) else name

@@ -91,19 +91,16 @@ class TestSharesightCsvImporter(unittest.TestCase):
 
         self.importer = SharesightCsvImporter(self.mock_api_client)
 
-    def _run_import(self, csv_data, portfolio_name=PORTFOLIO_NAME, country_code=COUNTRY_CODE, delete_existing=False, min_date=None, exclude_exdate_transactions_before_min_date=None, opening_balances_csv_data=None, residency_reset_csv_data=None, min_line=None, max_line=None, prices_csv_data=None):
+    def _run_import(self, csv_data, portfolio_name=PORTFOLIO_NAME, country_code=COUNTRY_CODE, delete_existing=False, min_date=None, exclude_exdate_transactions_before_min_date=None, residency_reset_csv_data=None, min_line=None, max_line=None, prices_csv_data=None):
         """Helper to run the import process with mock file."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             transactions_path = temp_path / "transactions.csv"
             transactions_path.write_text(csv_data, encoding="utf-8")
             prices_path = temp_path / "prices.csv" if prices_csv_data else None
-            opening_balances_path = temp_path / "opening-balances.csv" if opening_balances_csv_data else None
             residency_reset_path = temp_path / "residency-reset.csv" if residency_reset_csv_data else None
             if prices_path:
                 prices_path.write_text(prices_csv_data, encoding="utf-8")
-            if opening_balances_path:
-                opening_balances_path.write_text(opening_balances_csv_data, encoding="utf-8")
             if residency_reset_path:
                 residency_reset_path.write_text(residency_reset_csv_data, encoding="utf-8")
             options = ImportOptions(
@@ -113,7 +110,6 @@ class TestSharesightCsvImporter(unittest.TestCase):
                 min_line=min_line,
                 max_line=max_line,
                 prices_file_path=prices_path,
-                opening_balances_file_path=opening_balances_path,
                 residency_reset_file_path=residency_reset_path,
             )
             self.importer.import_file(
@@ -241,26 +237,6 @@ tx3,BUY,2023-03-10,MYFUND,OTHER,50,10.0,501.0,USD,My USD Account,Custom Fund,1,U
         self.assertEqual(cash_call_args['foreign_identifier'], 'tx3')
 
         self.mock_api_client.resync_cash_account.assert_called_once_with(CASH_ACC_USD_ID)
-
-    def test_frozen_opening_balances_are_imported_before_same_date_transactions(self):
-        csv_data = """unique_identifier,transaction_type,transaction_date,symbol,market,quantity,price_in_instrument_currency,amount,amount_currency,cash_account,description,instrument_currency,exchange_rate_gbp,amount_in_instrument_currency,skip_cash_account_transaction
-ordinary,BUY,2023-01-01,VUSA,LSE,1,51,,,,ordinary,GBP,1,51,true
-"""
-        opening_csv = """unique_identifier,transaction_type,transaction_date,symbol,market,quantity,price_in_instrument_currency,amount,amount_currency,cash_account,description,instrument_currency,exchange_rate_gbp,amount_in_instrument_currency,skip_cash_account_transaction
-GENERATED-HOLDING-VUSA,BUY,2023-01-01,VUSA,LSE,100,50,,,,Opening,GBP,1,5000,true
-GENERATED-CASH-GBP-Source GBP Acc,DEPOSIT,2023-01-01,,,,,1000,GBP,Source GBP Acc,Opening Balance,,,,
-"""
-        self._run_import(
-            csv_data,
-            opening_balances_csv_data=opening_csv,
-        )
-        self.assertEqual(self.mock_api_client.try_create_trade.call_count, 2)
-        trade_ids = [item.args[0]["unique_identifier"] for item in self.mock_api_client.try_create_trade.call_args_list]
-        self.assertEqual(trade_ids, ["GENERATED-HOLDING-VUSA", "ordinary"])
-        cash_calls = self.mock_api_client.try_create_cash_transaction.call_args_list
-        self.assertEqual(len(cash_calls), 1)
-        self.assertEqual(cash_calls[0].args[1]["foreign_identifier"], "GENERATED-CASH-GBP-Source GBP Acc")
-        self.mock_api_client.get_valuation_on.assert_not_called()
 
     def test_residency_reset_is_inserted_without_cash_movements(self):
         csv_data = """unique_identifier,transaction_type,transaction_date,symbol,market,quantity,price_in_instrument_currency,amount,amount_currency,cash_account,description,instrument_currency,exchange_rate_gbp,amount_in_instrument_currency

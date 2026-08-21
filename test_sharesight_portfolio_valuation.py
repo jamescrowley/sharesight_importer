@@ -45,8 +45,13 @@ class PortfolioValuationReaderTests(unittest.TestCase):
         self.assertEqual(row["amount_in_instrument_currency"], "125.00")
         self.assertEqual(row["amount_in_gbp"], "100")
         self.assertEqual(row["amount_in_aud"], "200")
-        self.assertEqual(row["opening_balance_source_value"], "100")
-        self.assertEqual(row["opening_balance_exchange_rate_date"], "2024-06-29")
+        self.assertEqual(row["residency_reset_source_portfolio_name"], "Source")
+        self.assertEqual(row["residency_reset_source_portfolio_currency"], "GBP")
+        self.assertEqual(
+            row["residency_reset_holding_value_in_source_currency"], "100"
+        )
+        self.assertEqual(row["residency_reset_valuation_date"], "2024-07-01")
+        self.assertEqual(row["residency_reset_exchange_rate_date"], "2024-06-29")
         self.assertEqual(row["skip_cash_account_transaction"], "true")
         self.api.get_valuation_on.assert_called_once_with(7, "2024-06-30")
 

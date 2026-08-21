@@ -39,10 +39,10 @@ class PortfolioValuationReader:
             )
         }
         audit = {
-            "opening_balance_source_portfolio": source_portfolio_name,
-            "opening_balance_source_currency": source_currency,
-            "opening_balance_valuation_date": valuation_date.isoformat(),
-            "opening_balance_exchange_rate_date": selected_rate_date.isoformat(),
+            "residency_reset_source_portfolio_name": source_portfolio_name,
+            "residency_reset_source_portfolio_currency": source_currency,
+            "residency_reset_valuation_date": valuation_date.isoformat(),
+            "residency_reset_exchange_rate_date": selected_rate_date.isoformat(),
         }
         return [
             self._holding_row(
@@ -101,7 +101,7 @@ class PortfolioValuationReader:
             "amount_in_instrument_currency": _plain(amount_in_instrument),
             "amount_in_aud": _plain(amount_in_aud),
             "amount_in_gbp": _plain(amount_in_gbp),
-            "opening_balance_source_value": _plain(source_value),
+            "residency_reset_holding_value_in_source_currency": _plain(source_value),
             "description": "Deemed acquisition at residency commencement",
         }
         if holding["market"].lower() == "other":

@@ -13,9 +13,10 @@ TRANSACTION_CSV_FIELDS = [
     "accrued_income_in_aud", "accrued_income_in_gbp", "symbol_name",
     "instrument_country_code", "symbol_type", "tax_withheld",
     "tax_withheld_currency", "tax_credit", "skip_cash_account_transaction",
-    "opening_balance_source_portfolio", "opening_balance_source_currency",
-    "opening_balance_source_value", "opening_balance_valuation_date",
-    "opening_balance_exchange_rate_date",
+    "residency_reset_source_portfolio_name",
+    "residency_reset_source_portfolio_currency",
+    "residency_reset_holding_value_in_source_currency",
+    "residency_reset_valuation_date", "residency_reset_exchange_rate_date",
     "residency_reset_date",
 ]
 

@@ -60,7 +60,7 @@ Useful optional arguments:
 --delete-existing                   Clear existing holdings/cash activity first
 ```
 
-`--delete-existing` is destructive: it deletes portfolio cash transactions, holdings, and importer-created custom instruments before recreating data. The importer refuses to combine this option with date or line filters.
+`--delete-existing` is destructive: it deletes portfolio cash transactions and holdings before recreating data. Importer-created custom instruments that are still referenced by the input are preserved (including their Sharesight categories); generated instruments no longer present in the input are deleted. The importer refuses to combine this option with date or line filters.
 
 Use `--ignore-retained-income` when retained income and retained equalisation should not be represented in the destination portfolio (for example, where the destination's tax treatment does not require them). It skips both `RETAINED_NET_INCOME` and `RETAINED_EQUALISATION` rows before custom-instrument synchronization and transaction planning. Other income types are unaffected.
 

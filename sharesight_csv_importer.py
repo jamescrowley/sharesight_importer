@@ -109,7 +109,10 @@ class SharesightCsvImporter:
         )
 
         self._custom_instruments.sync(
-            portfolio_id, transactions, options.prices_file_path
+            portfolio_id,
+            transactions,
+            options.prices_file_path,
+            delete_obsolete=options.delete_existing,
         )
         ImportExecutor(
             self._api_client, portfolio_id, country_code, cash_accounts
@@ -191,8 +194,6 @@ class SharesightCsvImporter:
             print("Removing existing trades and cash account transactions")
             self._api_client.delete_all_cash_account_transactions_in_portfolio(portfolio_id)
             self._api_client.delete_all_holdings(portfolio_id)
-            print("Removing existing custom instruments")
-            self._custom_instruments.delete_generated(portfolio_id)
             cash_accounts = self._create_cash_accounts(
                 portfolio_id, required_cash_accounts
             )

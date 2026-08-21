@@ -43,5 +43,42 @@ class CustomInstrumentDeduplicationTests(unittest.TestCase):
             )
 
 
+class CustomInstrumentCleanupTests(unittest.TestCase):
+    def test_delete_obsolete_preserves_required_and_manual_instruments(self):
+        api_client = MagicMock()
+        api_client.get_custom_investments.return_value = {
+            "custom_investments": [
+                {
+                    "id": 1,
+                    "code": "CUSTOM-123",
+                    "name": "Custom Fund (AUTO)",
+                    "country_code": "GB",
+                    "investment_type": "MANAGED_FUND",
+                },
+                {
+                    "id": 2,
+                    "code": "OBSOLETE-123",
+                    "name": "Obsolete Fund (AUTO)",
+                    "country_code": "GB",
+                    "investment_type": "MANAGED_FUND",
+                },
+                {
+                    "id": 3,
+                    "code": "MANUAL",
+                    "name": "Manual Fund",
+                    "country_code": "GB",
+                    "investment_type": "MANAGED_FUND",
+                },
+            ]
+        }
+        synchronizer = CustomInstrumentSynchronizer(api_client)
+
+        synchronizer.sync(123, [custom_row(2)], delete_obsolete=True)
+
+        api_client.delete_custom_investment.assert_called_once_with(2)
+        api_client.create_custom_investment.assert_not_called()
+        api_client.update_custom_investment.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -23,18 +23,21 @@ class CustomInstrumentSynchronizer:
     def __init__(self, api_client):
         self._api_client = api_client
 
-    def sync(self, portfolio_id, transactions, prices_file_path=None):
+    def sync(
+        self,
+        portfolio_id,
+        transactions,
+        prices_file_path=None,
+        delete_obsolete=False,
+    ):
         instruments = self._instruments_from_transactions(transactions, portfolio_id)
         print(f"Found {len(instruments)} custom instruments")
         print("    " + "\n    ".join(str(instrument) for instrument in instruments))
         print("Creating custom instruments")
-        self._sync_instruments(portfolio_id, instruments)
+        self._sync_instruments(portfolio_id, instruments, delete_obsolete)
 
         if prices_file_path:
             self._sync_prices(portfolio_id, prices_file_path)
-
-    def delete_generated(self, portfolio_id):
-        self._api_client.delete_custom_instruments(portfolio_id, AUTO_NAME_SUFFIX)
 
     def _instruments_from_transactions(self, transactions, portfolio_id):
         instruments_by_symbol = {}
@@ -58,10 +61,29 @@ class CustomInstrumentSynchronizer:
             instruments_by_symbol[instrument["symbol"]] = instrument
         return list(instruments_by_symbol.values())
 
-    def _sync_instruments(self, portfolio_id, instruments):
+    def _sync_instruments(self, portfolio_id, instruments, delete_obsolete=False):
         existing_instruments = self._api_client.get_custom_investments(portfolio_id).get(
             "custom_investments", []
         )
+        if delete_obsolete:
+            required_codes = {instrument["symbol"] for instrument in instruments}
+            obsolete_instruments = [
+                instrument
+                for instrument in existing_instruments
+                if instrument["name"].endswith(AUTO_NAME_SUFFIX)
+                and instrument["code"] not in required_codes
+            ]
+            if obsolete_instruments:
+                print("Removing obsolete custom instruments")
+            for instrument in obsolete_instruments:
+                print(f"Removing custom instrument {instrument['code']}")
+                self._api_client.delete_custom_investment(instrument["id"])
+            obsolete_ids = {instrument["id"] for instrument in obsolete_instruments}
+            existing_instruments = [
+                instrument
+                for instrument in existing_instruments
+                if instrument["id"] not in obsolete_ids
+            ]
         existing_by_code = {
             instrument["code"]: instrument for instrument in existing_instruments
         }

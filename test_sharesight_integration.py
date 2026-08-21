@@ -424,6 +424,44 @@ class ImporterHttpIntegrationTests(unittest.TestCase):
             f"https://api.sharesight.com/api/v3/custom_investments/{auto_instrument_id}",
         ])
 
+    def test_destructive_replacement_preserves_custom_instrument_still_in_input(self):
+        portfolio = self.transport.add_portfolio()
+        self.transport.add_cash_account(portfolio["id"], "GBP", "Broker")
+        existing_instrument = {
+            "id": self.transport._id(),
+            "portfolio_id": portfolio["id"],
+            "code": f"PRIVATE-{portfolio['id']}",
+            "name": "Private Fund (AUTO)",
+            "country_code": "GB",
+            "currency_code": "GBP",
+            "investment_type": "MANAGED_FUND",
+            "categories": ["Private markets"],
+        }
+        self.transport.custom_investments.append(existing_instrument)
+
+        self.run_import([
+            csv_row(
+                unique_identifier="replacement-custom",
+                symbol="PRIVATE",
+                market="OTHER",
+                symbol_name="Private Fund",
+                instrument_country_code="GB",
+                symbol_type="MANAGED_FUND",
+            )
+        ], delete_existing=True)
+
+        self.assertIn(existing_instrument, self.transport.custom_investments)
+        self.assertEqual(existing_instrument["categories"], ["Private markets"])
+        custom_delete_url = (
+            f"https://api.sharesight.com/api/v3/custom_investments/"
+            f"{existing_instrument['id']}"
+        )
+        self.assertNotIn(custom_delete_url, [
+            request["url"]
+            for request in self.transport.requests
+            if request["method"] == "delete"
+        ])
+
     def test_cost_base_adjustment_has_no_cash_effect(self):
         self.run_import([csv_row(
             unique_identifier="adjust", transaction_type="ADJUST_COST_BASE", amount="0",

@@ -2,23 +2,49 @@ import csv
 import datetime
 from dataclasses import dataclass
 
-
 TRANSACTION_CSV_FIELDS = [
-    "unique_identifier", "transaction_type", "transaction_date", "goes_ex_on",
-    "symbol", "market", "quantity", "price_in_instrument_currency", "amount",
-    "amount_currency", "cash_account", "description",
-    "brokerage_in_instrument_currency", "instrument_currency", "exchange_rate_aud",
-    "exchange_rate_gbp", "amount_in_instrument_currency", "amount_in_aud",
-    "amount_in_gbp", "accrued_income", "accrued_income_in_instrument_currency",
-    "accrued_income_in_aud", "accrued_income_in_gbp", "symbol_name",
-    "instrument_country_code", "symbol_type", "tax_withheld",
-    "tax_withheld_currency", "tax_credit", "skip_cash_account_transaction",
+    "unique_identifier",
+    "transaction_type",
+    "transaction_date",
+    "goes_ex_on",
+    "symbol",
+    "market",
+    "quantity",
+    "price_in_instrument_currency",
+    "amount",
+    "amount_currency",
+    "cash_account",
+    "description",
+    "brokerage_in_instrument_currency",
+    "instrument_currency",
+    "exchange_rate_aud",
+    "exchange_rate_gbp",
+    "amount_in_instrument_currency",
+    "amount_in_aud",
+    "amount_in_gbp",
+    "accrued_income",
+    "accrued_income_in_instrument_currency",
+    "accrued_income_in_aud",
+    "accrued_income_in_gbp",
+    "symbol_name",
+    "instrument_country_code",
+    "symbol_type",
+    "tax_withheld",
+    "tax_withheld_currency",
+    "tax_credit",
+    "skip_cash_account_transaction",
     "residency_reset_source_portfolio_name",
     "residency_reset_source_portfolio_currency",
     "residency_reset_holding_value_in_source_currency",
-    "residency_reset_valuation_date", "residency_reset_exchange_rate_date",
+    "residency_reset_valuation_date",
+    "residency_reset_exchange_rate_date",
     "residency_reset_date",
 ]
+
+
+def currency_csv_fields(currency):
+    suffix = currency.lower()
+    return [f"exchange_rate_{suffix}", f"amount_in_{suffix}", f"accrued_income_in_{suffix}"]
 
 
 @dataclass(frozen=True)
@@ -42,11 +68,26 @@ def iter_transaction_rows(transactions):
             yield transaction
 
 
-def load_transactions(file_path, injected_rows, min_date,
-                      exclude_exdate_transactions_before_min_date, min_line, max_line,
-                      inject_before_date=None):
-    with open(file_path, mode="r", encoding="utf-8-sig") as file:
+def load_transactions(
+    file_path,
+    injected_rows,
+    min_date,
+    exclude_exdate_transactions_before_min_date,
+    min_line,
+    max_line,
+    inject_before_date=None,
+):
+    with open(file_path, encoding="utf-8-sig") as file:
         reader = csv.DictReader(file)
+        if not reader.fieldnames:
+            raise ValueError("Transaction CSV has no header row")
+        duplicate_headers = sorted(
+            {field for field in reader.fieldnames if reader.fieldnames.count(field) > 1}
+        )
+        if duplicate_headers:
+            raise ValueError(
+                f"Transaction CSV has duplicate columns: {', '.join(duplicate_headers)}"
+            )
         print(f"Found columns in CSV: {reader.fieldnames}")
         rows = [TransactionRow(reader.line_num, dict(data_row)) for data_row in reader]
 
@@ -82,7 +123,9 @@ def load_transactions(file_path, injected_rows, min_date,
                     f"Lines {row.line_number}-{partner.line_number}: filters cannot select only one row of a merge pair"
                 )
             if row_selected:
-                cancel, buy = (row, partner) if transaction_type == "MERGE_CANCEL" else (partner, row)
+                cancel, buy = (
+                    (row, partner) if transaction_type == "MERGE_CANCEL" else (partner, row)
+                )
                 transactions.append(MergePair(cancel=cancel, buy=buy))
             row_index += 2
             continue
@@ -96,18 +139,20 @@ def load_transactions(file_path, injected_rows, min_date,
     if inject_before_date is None:
         return generated_rows + transactions
     before_boundary = [
-        transaction for transaction in transactions
+        transaction
+        for transaction in transactions
         if _transaction_date(transaction) < inject_before_date
     ]
     from_boundary = [
-        transaction for transaction in transactions
+        transaction
+        for transaction in transactions
         if _transaction_date(transaction) >= inject_before_date
     ]
     return before_boundary + generated_rows + from_boundary
 
 
 def _read_rows(file_path):
-    with open(file_path, mode="r", encoding="utf-8-sig") as file:
+    with open(file_path, encoding="utf-8-sig") as file:
         reader = csv.DictReader(file)
         return [TransactionRow(reader.line_num, dict(data_row)) for data_row in reader]
 
@@ -127,21 +172,34 @@ def _transaction_date(transaction):
 
 
 def validate_transactions(transactions, country_code, supported_transaction_types):
-    if country_code not in {"AU", "GB"}:
-        raise ValueError(f"Unsupported country code: {country_code}. Expected AU or GB")
+    if country_code is not None and (
+        not isinstance(country_code, str)
+        or len(country_code) != 2
+        or not country_code.isalpha()
+        or not country_code.isupper()
+    ):
+        raise ValueError(
+            f"Unsupported country code: {country_code}. Expected uppercase two-letter code"
+        )
     for row in iter_transaction_rows(transactions):
         transaction_type = row.data.get("transaction_type")
         if transaction_type not in supported_transaction_types:
-            raise ValueError(f"Line {row.line_number}: unsupported transaction type {transaction_type}")
+            raise ValueError(
+                f"Line {row.line_number}: unsupported transaction type {transaction_type}"
+            )
 
 
-def _row_is_selected(row, min_date, exclude_exdate_transactions_before_min_date, min_line, max_line):
+def _row_is_selected(
+    row, min_date, exclude_exdate_transactions_before_min_date, min_line, max_line
+):
     if min_line and row.line_number < min_line:
         return False
     if max_line and row.line_number > max_line:
         return False
     if min_date:
-        transaction_date = datetime.datetime.strptime(row.data["transaction_date"], "%Y-%m-%d").date()
+        transaction_date = datetime.datetime.strptime(
+            row.data["transaction_date"], "%Y-%m-%d"
+        ).date()
         if transaction_date < min_date:
             return False
         goes_ex_on = row.data.get("goes_ex_on") or ""

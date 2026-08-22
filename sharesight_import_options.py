@@ -13,3 +13,8 @@ class ImportOptions:
     prices_file_path: str | PathLike | None = None
     residency_reset_file_path: str | PathLike | None = None
     ignore_retained_income: bool = False
+    create_portfolio: bool = False
+    dry_run: bool = False
+    yes: bool = False
+    resync_cash_accounts: bool = True
+    managed_instrument_name_suffix: str = "(AUTO)"

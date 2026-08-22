@@ -1,0 +1,2 @@
+unique_identifier,transaction_type,transaction_date,symbol,market,quantity,price_in_instrument_currency,amount,amount_currency,cash_account,description,brokerage_in_instrument_currency,instrument_currency,exchange_rate_eur,amount_in_instrument_currency,amount_in_eur
+eur-buy-001,BUY,2025-04-01,SYNTH,XETRA,3,50,151,EUR,Broker,Synthetic EUR purchase,1,EUR,1,151,151

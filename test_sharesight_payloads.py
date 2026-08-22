@@ -35,8 +35,8 @@ def transaction_row(**overrides):
 
 
 class SharesightPayloadTests(unittest.TestCase):
-    def test_gb_trade_payload_uses_gbp_exchange_rate(self):
-        payload = build_trade_payload(7, "GB", transaction_row())
+    def test_gbp_trade_payload_uses_gbp_exchange_rate(self):
+        payload = build_trade_payload(7, "GBP", transaction_row())
         self.assertEqual(payload, {
             "unique_identifier": "synthetic-1",
             "transaction_type": "BUY",
@@ -55,15 +55,15 @@ class SharesightPayloadTests(unittest.TestCase):
             "comments": "synthetic-1 Synthetic transaction",
         })
 
-    def test_au_opening_balance_uses_aud_cost_base(self):
+    def test_aud_opening_balance_uses_aud_cost_base(self):
         payload = build_trade_payload(
-            7, "AU", transaction_row(transaction_type="OPENING_BALANCE")
+            7, "AUD", transaction_row(transaction_type="OPENING_BALANCE")
         )
         self.assertEqual(payload["exchange_rate"], "1.9")
         self.assertEqual(payload["cost_base"], "96.9")
 
     def test_capital_return_uses_ex_date_and_absolute_value(self):
-        payload = build_trade_payload(7, "GB", transaction_row(
+        payload = build_trade_payload(7, "GBP", transaction_row(
             transaction_type="CAPITAL_RETURN",
             goes_ex_on="2024-01-08",
             amount_in_instrument_currency="-12.5",
@@ -72,10 +72,10 @@ class SharesightPayloadTests(unittest.TestCase):
         self.assertEqual(payload["capital_return_value"], 12.5)
         self.assertEqual(payload["paid_on"], "2024-01-10")
 
-    def test_payout_uses_country_specific_banked_amount(self):
+    def test_payout_uses_currency_specific_banked_amount(self):
         row = transaction_row(transaction_type="DIVIDEND", amount="8")
-        self.assertEqual(build_payout_payload(7, 9, "GB", row)["banked_amount"], "51")
-        self.assertEqual(build_payout_payload(7, 9, "AU", row)["banked_amount"], "96.9")
+        self.assertEqual(build_payout_payload(7, 9, "GBP", row)["banked_amount"], "51")
+        self.assertEqual(build_payout_payload(7, 9, "AUD", row)["banked_amount"], "96.9")
 
     def test_cash_payload_removes_accrued_income(self):
         payload = build_cash_payload(transaction_row(amount="51", accrued_income="3"))
@@ -100,8 +100,8 @@ class SharesightPayloadTests(unittest.TestCase):
             "comments": "synthetic-1 Synthetic transaction",
         })
 
-    def test_unsupported_country_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "Unsupported country code"):
+    def test_invalid_portfolio_currency_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported portfolio currency"):
             build_trade_payload(7, "US", transaction_row())
 
 

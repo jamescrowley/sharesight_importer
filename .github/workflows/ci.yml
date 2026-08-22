@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --locked --dev
+      - run: uv run python -m unittest -v
+      - run: uv run python -m compileall -q sharesight_importer *.py
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked --dev
+      - run: uv build
+      - name: Clean-environment install and CLI smoke test
+        run: |
+          python -m venv /tmp/sharesight-importer-smoke
+          /tmp/sharesight-importer-smoke/bin/pip install dist/*.whl
+          /tmp/sharesight-importer-smoke/bin/sharesight-importer --help
+          /tmp/sharesight-importer-smoke/bin/sharesight-importer validate --file-name examples/eur-trade.csv --portfolio-currency EUR
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-distributions
+          path: dist/*

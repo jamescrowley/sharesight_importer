@@ -1,0 +1,2 @@
+unique_identifier,transaction_type,transaction_date,symbol,market,quantity,price_in_instrument_currency,amount,amount_currency,cash_account,description,brokerage_in_instrument_currency,instrument_currency,exchange_rate_aud,amount_in_instrument_currency,amount_in_aud
+aud-history-buy-001,BUY,2024-01-10,SYNTH,ASX,10,15,150,AUD,Broker,Synthetic complete pre-residency history,0,AUD,1,150,150

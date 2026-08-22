@@ -1,3 +1,5 @@
+import csv
+import io
 import unittest
 from unittest.mock import MagicMock, call, patch
 import datetime
@@ -11,6 +13,7 @@ from sharesight_import_options import ImportOptions
 # Test Data Constants
 PORTFOLIO_NAME = "Test Portfolio"
 COUNTRY_CODE = "GB"
+PORTFOLIO_CURRENCY = "GBP"
 PORTFOLIO_ID = 123
 CASH_ACC_USD_ID = 456
 CASH_ACC_GBP_ID = 457
@@ -19,6 +22,44 @@ HOLDING_ID_MSFT = 790
 HOLDING_ID_CUSTOM = 791
 CUSTOM_INST_ID = 999
 PRICE_ID = 1001
+
+
+def canonicalize_test_csv(csv_data, portfolio_currency):
+    """Fill canonical conversion fields omitted by older focused fixtures."""
+    currency = portfolio_currency.lower()
+    reader = csv.DictReader(io.StringIO(csv_data))
+    fieldnames = list(reader.fieldnames or [])
+    for field in (
+        "instrument_currency",
+        f"exchange_rate_{currency}",
+        "amount_in_instrument_currency",
+        f"amount_in_{currency}",
+    ):
+        if field not in fieldnames:
+            fieldnames.append(field)
+    rows = list(reader)
+    for row in rows:
+        if row.get("transaction_type") in {
+            "BUY",
+            "SELL",
+            "OPENING_BALANCE",
+            "DIVIDEND",
+            "DISTRIBUTION",
+            "RETAINED_NET_INCOME",
+            "RETAINED_EQUALISATION",
+        }:
+            amount = row.get("amount_in_instrument_currency") or row.get("amount") or "0"
+            row["instrument_currency"] = (
+                row.get("instrument_currency") or row.get("amount_currency") or "GBP"
+            )
+            row[f"exchange_rate_{currency}"] = row.get(f"exchange_rate_{currency}") or "1"
+            row["amount_in_instrument_currency"] = amount
+            row[f"amount_in_{currency}"] = row.get(f"amount_in_{currency}") or amount
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue()
 
 
 def api_result(data=None, status_code=200, duplicate=False, endpoint="mock://create"):
@@ -36,7 +77,18 @@ class TestSharesightCsvImporter(unittest.TestCase):
         """Set up a mock API client for each test."""
         self.mock_api_client = MagicMock(name="MockApiClient")
         # Default successful responses - override in specific tests if needed
-        self.mock_api_client.create_portfolio.return_value = {'id': PORTFOLIO_ID}
+        def create_portfolio(payload):
+            self.mock_api_client.get_portfolios.return_value = {
+                'portfolios': [{
+                    'id': PORTFOLIO_ID,
+                    'name': payload['name'],
+                    'country_code': payload['country_code'],
+                    'currency_code': "AUD" if payload['country_code'] == "AU" else "GBP",
+                }]
+            }
+            return {'id': PORTFOLIO_ID}
+
+        self.mock_api_client.create_portfolio.side_effect = create_portfolio
         self.mock_api_client.create_cash_account.return_value = {'cash_account': {'id': CASH_ACC_USD_ID}} # Default to USD for simplicity
         self.mock_api_client.get_portfolios.return_value = {'portfolios': []} # Default: portfolio doesn't exist
         self.mock_api_client.get_cash_accounts.return_value = {'cash_accounts': []} # Default: no cash accounts
@@ -91,18 +143,27 @@ class TestSharesightCsvImporter(unittest.TestCase):
 
         self.importer = SharesightCsvImporter(self.mock_api_client)
 
-    def _run_import(self, csv_data, portfolio_name=PORTFOLIO_NAME, country_code=COUNTRY_CODE, delete_existing=False, min_date=None, exclude_exdate_transactions_before_min_date=None, residency_reset_csv_data=None, min_line=None, max_line=None, prices_csv_data=None):
+    def _run_import(self, csv_data, portfolio_name=PORTFOLIO_NAME, country_code=COUNTRY_CODE, portfolio_currency=PORTFOLIO_CURRENCY, delete_existing=False, min_date=None, exclude_exdate_transactions_before_min_date=None, residency_reset_csv_data=None, min_line=None, max_line=None, prices_csv_data=None):
         """Helper to run the import process with mock file."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             transactions_path = temp_path / "transactions.csv"
-            transactions_path.write_text(csv_data, encoding="utf-8")
+            portfolios = self.mock_api_client.get_portfolios.return_value.get('portfolios', [])
+            for portfolio in portfolios:
+                if portfolio.get('currency_code') == COUNTRY_CODE:
+                    portfolio['currency_code'] = portfolio_currency
+            transactions_path.write_text(
+                canonicalize_test_csv(csv_data, portfolio_currency), encoding="utf-8"
+            )
             prices_path = temp_path / "prices.csv" if prices_csv_data else None
             residency_reset_path = temp_path / "residency-reset.csv" if residency_reset_csv_data else None
             if prices_path:
                 prices_path.write_text(prices_csv_data, encoding="utf-8")
             if residency_reset_path:
-                residency_reset_path.write_text(residency_reset_csv_data, encoding="utf-8")
+                residency_reset_path.write_text(
+                    canonicalize_test_csv(residency_reset_csv_data, portfolio_currency),
+                    encoding="utf-8",
+                )
             options = ImportOptions(
                 delete_existing=delete_existing,
                 min_date=min_date,
@@ -111,9 +172,15 @@ class TestSharesightCsvImporter(unittest.TestCase):
                 max_line=max_line,
                 prices_file_path=prices_path,
                 residency_reset_file_path=residency_reset_path,
+                create_portfolio=True,
+                yes=delete_existing,
             )
             self.importer.import_file(
-                transactions_path, portfolio_name, country_code, options
+                transactions_path,
+                portfolio_name,
+                portfolio_currency,
+                options=options,
+                country_code=country_code,
             )
 
     def test_import_new_portfolio_simple_buy(self):
@@ -129,7 +196,7 @@ tx1,BUY,2023-01-15,AAPL,NASDAQ,10,150.0,1505.0,USD,My USD Account,Test Buy,5,USD
         self._run_import(csv_data)
 
         # Assertions
-        self.mock_api_client.get_portfolios.assert_called_once()
+        self.assertEqual(self.mock_api_client.get_portfolios.call_count, 2)
         self.mock_api_client.create_portfolio.assert_called_once_with({
             "name": PORTFOLIO_NAME,
             "country_code": COUNTRY_CODE,
@@ -248,7 +315,12 @@ reset-sell,SELL,2024-06-30,VUSA,LSE,10,5,GBP,0.5,1,50,100,50,true
 reset-buy,BUY,2024-07-01,VUSA,LSE,10,5,GBP,0.5,1,50,100,50,true
 """
 
-        self._run_import(csv_data, residency_reset_csv_data=reset_csv)
+        self._run_import(
+            csv_data,
+            country_code="AU",
+            portfolio_currency="AUD",
+            residency_reset_csv_data=reset_csv,
+        )
 
         trade_ids = [
             item.args[0]["unique_identifier"]

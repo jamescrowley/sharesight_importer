@@ -12,10 +12,13 @@ class PortfolioValuationReader:
 
     def find_portfolio(self, name):
         portfolios = self._api_client.get_portfolios().get("portfolios", [])
-        portfolio = next((item for item in portfolios if item["name"] == name), None)
-        if portfolio is None:
+        matches = [item for item in portfolios if item["name"] == name]
+        if not matches:
             raise ValueError(f"Source portfolio not found: {name}")
-        return portfolio
+        if len(matches) > 1:
+            ids = ", ".join(str(item.get("id")) for item in matches)
+            raise ValueError(f"Multiple source portfolios named {name!r} matched IDs: {ids}")
+        return matches[0]
 
     def generate_holding_rows(
         self,
@@ -24,14 +27,14 @@ class PortfolioValuationReader:
         source_currency,
         valuation_date,
         exchange_rates_file_path,
+        target_currencies=("AUD", "GBP"),
+        managed_instrument_name_suffix=AUTO_NAME_SUFFIX,
     ):
         valuation = self._api_client.get_valuation_on(
             source_portfolio_id,
             (valuation_date - datetime.timedelta(days=1)).isoformat(),
         )
-        rates, selected_rate_date = load_exchange_rates(
-            exchange_rates_file_path, valuation_date
-        )
+        rates, selected_rate_date = load_exchange_rates(exchange_rates_file_path, valuation_date)
         custom_instruments = {
             item.get("code"): item
             for item in self._api_client.get_custom_investments(source_portfolio_id).get(
@@ -53,6 +56,8 @@ class PortfolioValuationReader:
                 rates,
                 custom_instruments,
                 audit,
+                target_currencies,
+                managed_instrument_name_suffix,
             )
             for holding in valuation.get("holdings", [])
         ]
@@ -66,6 +71,8 @@ class PortfolioValuationReader:
         rates,
         custom_instruments,
         audit,
+        target_currencies,
+        managed_instrument_name_suffix,
     ):
         instrument = self._api_client.get_holding(holding["id"])["holding"]["instrument"]
         instrument_currency = instrument["currency_code"]
@@ -75,14 +82,14 @@ class PortfolioValuationReader:
             raise ValueError(f"Holding {holding.get('symbol')} has zero quantity")
         source_to_instrument = _rate(rates, source_currency, instrument_currency)
         amount_in_instrument = source_value * source_to_instrument
-        amount_in_aud = _convert_from_instrument(
-            amount_in_instrument, rates, "AUD", instrument_currency
-        )
-        amount_in_gbp = _convert_from_instrument(
-            amount_in_instrument, rates, "GBP", instrument_currency
-        )
-        _validate_cross_rate(source_value, amount_in_aud, rates, source_currency, "AUD")
-        _validate_cross_rate(source_value, amount_in_gbp, rates, source_currency, "GBP")
+        converted = {
+            target: _convert_from_instrument(
+                amount_in_instrument, rates, target, instrument_currency
+            )
+            for target in target_currencies
+        }
+        for target, value in converted.items():
+            _validate_cross_rate(source_value, value, rates, source_currency, target)
 
         row = {
             **audit,
@@ -95,21 +102,21 @@ class PortfolioValuationReader:
             "quantity": _plain(quantity),
             "instrument_currency": instrument_currency,
             "brokerage_in_instrument_currency": "0",
-            "exchange_rate_aud": _plain(_rate(rates, "AUD", instrument_currency)),
-            "exchange_rate_gbp": _plain(_rate(rates, "GBP", instrument_currency)),
             "price_in_instrument_currency": _plain(amount_in_instrument / quantity),
             "amount_in_instrument_currency": _plain(amount_in_instrument),
-            "amount_in_aud": _plain(amount_in_aud),
-            "amount_in_gbp": _plain(amount_in_gbp),
             "residency_reset_holding_value_in_source_currency": _plain(source_value),
             "description": "Deemed acquisition at residency commencement",
         }
+        for target, value in converted.items():
+            suffix = target.lower()
+            row[f"exchange_rate_{suffix}"] = _plain(_rate(rates, target, instrument_currency))
+            row[f"amount_in_{suffix}"] = _plain(value)
         if holding["market"].lower() == "other":
             custom = custom_instruments.get(holding["symbol"], {})
             row.update(
                 {
                     "symbol_name": str(custom.get("name", "")).removesuffix(
-                        f" {AUTO_NAME_SUFFIX}"
+                        f" {managed_instrument_name_suffix}"
                     ),
                     "instrument_country_code": custom.get("country_code", ""),
                     "symbol_type": custom.get("investment_type", ""),
@@ -119,15 +126,13 @@ class PortfolioValuationReader:
 
 
 def load_exchange_rates(file_path, requested_date):
-    with open(file_path, mode="r", encoding="utf-8-sig") as file:
+    with open(file_path, encoding="utf-8-sig") as file:
         rows = {row["date"]: row for row in csv.DictReader(file)}
     for days_prior in range(4):
         selected = requested_date - datetime.timedelta(days=days_prior)
         if selected.isoformat() in rows:
             return rows[selected.isoformat()], selected
-    raise ValueError(
-        f"No exchange rates found for {requested_date} or the three preceding days"
-    )
+    raise ValueError(f"No exchange rates found for {requested_date} or the three preceding days")
 
 
 def _rate(rates, base, quote):
@@ -143,9 +148,7 @@ def _convert_from_instrument(value, rates, target_currency, instrument_currency)
     return value / _rate(rates, target_currency, instrument_currency)
 
 
-def _validate_cross_rate(
-    source_value, converted_value, rates, source_currency, target_currency
-):
+def _validate_cross_rate(source_value, converted_value, rates, source_currency, target_currency):
     if source_currency == target_currency:
         direct_value = source_value
     else:

@@ -1,0 +1,4 @@
+unique_identifier,transaction_type,transaction_date,goes_ex_on,symbol,market,quantity,price_in_instrument_currency,amount,amount_currency,cash_account,description,brokerage_in_instrument_currency,instrument_currency,exchange_rate_cad,amount_in_instrument_currency,amount_in_cad,accrued_income,accrued_income_in_instrument_currency,accrued_income_in_cad,symbol_name,instrument_country_code,symbol_type
+cad-custom-buy-001,BUY,2025-01-15,,PRIVATE,OTHER,100,2.00,200,CAD,Broker,Synthetic private investment,0,CAD,1,200,200,0,0,0,Synthetic Private Fund,CA,MANAGED_FUND
+cad-merge-cancel-001,MERGE_CANCEL,2025-06-01,2025-06-01,OLD,TSX,100,,,,,Synthetic merger cancellation,,CAD,,,,,,,,,
+cad-merge-buy-001,MERGE_BUY,2025-06-01,2025-06-01,NEW,TSX,50,,,,,Synthetic merger acquisition,,CAD,,,,,,,,,

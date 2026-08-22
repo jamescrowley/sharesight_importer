@@ -1,0 +1,25 @@
+name: Bug report
+description: Report a reproducible problem without private financial data.
+body:
+  - type: markdown
+    attributes:
+      value: Never include credentials, tokens, portfolio exports, or real transactions.
+  - type: input
+    id: version
+    attributes:
+      label: Version and Python version
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Synthetic reproduction
+      description: Include a minimal synthetic CSV and exact command with secrets removed.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true

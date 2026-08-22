@@ -1,0 +1,16 @@
+name: Feature request
+description: Propose a broker-neutral schema or safety improvement.
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case
+      description: Describe the normalized transaction semantics, not private broker/account data.
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and safety impact
+    validations:
+      required: true

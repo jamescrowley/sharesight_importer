@@ -160,3 +160,22 @@ cython_debug/
 #.idea/
 secret
 .DS_Store
+
+# Private/local Sharesight artifacts (synthetic fixtures under examples/ are tracked)
+.agents/
+.idea/
+.vscode/
+*.code-workspace
+rates/
+dates.txt
+transactions*.csv
+portfolio*.csv
+portfolio*.json
+exchange_rates*.csv
+exchange-rates*.csv
+prices.csv
+residency-reset-*.csv
+api-response*.json
+oauth*.json
+*.pem
+*.key

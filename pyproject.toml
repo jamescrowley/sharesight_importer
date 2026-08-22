@@ -1,13 +1,61 @@
 [project]
 name = "sharesight-importer"
-version = "0.1.0"
-description = "Import bespoke transaction and price CSVs into Sharesight"
+version = "1.0.0"
+description = "Power-user CLI for importing canonical transaction CSVs into Sharesight"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "James Crowley" }]
 requires-python = ">=3.12,<3.15"
 dependencies = [
-    "curlify>=2.2.1,<3",
     "requests>=2.32.0,<3",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+
+[project.urls]
+Repository = "https://github.com/jamescrowley/sharesight-importer"
+Issues = "https://github.com/jamescrowley/sharesight-importer/issues"
+
+[project.scripts]
+sharesight-importer = "sharesight_importer.cli:main"
+
+[dependency-groups]
+dev = [
+    "build>=1.2,<2",
+    "ruff>=0.12,<1",
 ]
 
 [tool.uv]
-package = false
+package = true
+
+[tool.setuptools]
+packages = ["sharesight_importer"]
+py-modules = [
+    "sharesight_api_client",
+    "sharesight_console",
+    "sharesight_csv_importer",
+    "sharesight_csv_input",
+    "sharesight_custom_instruments",
+    "sharesight_import_executor",
+    "sharesight_import_options",
+    "sharesight_import_plan",
+    "sharesight_payloads",
+    "sharesight_portfolio_valuation",
+    "sharesight_residency_reset",
+    "sharesight_schema",
+    "sharesight_trade_validation",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["test_*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]

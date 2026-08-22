@@ -1,8 +1,8 @@
 import datetime
 from dataclasses import dataclass
+from decimal import Decimal
 
 from sharesight_csv_input import MergePair, TransactionRow
-
 
 SKIP_CASH_TRANSACTION_FLAG = "skip_cash_account_transaction"
 
@@ -85,7 +85,7 @@ def _expand_row(row):
     transaction_type = data["transaction_type"]
     if transaction_type in COMPOUND_TRANSACTION_TYPES:
         return _expand_retained(row.line_number, data, transaction_type)
-    if transaction_type in {"CAPITAL_CALL", "CAPITAL_RETURN"} and float(data["amount"]) == 0:
+    if transaction_type in {"CAPITAL_CALL", "CAPITAL_RETURN"} and _decimal(data["amount"]) == 0:
         return []
 
     policy = TRANSACTION_POLICIES[transaction_type]
@@ -93,14 +93,16 @@ def _expand_row(row):
     if policy.creates_cash_transaction and not _is_true(data.get(SKIP_CASH_TRANSACTION_FLAG)):
         operations.append(PlannedCash(row.line_number, data))
 
-    accrued_income = float(data.get("accrued_income") or 0)
+    accrued_income = _decimal(data.get("accrued_income") or 0)
     if accrued_income and transaction_type in {"BUY", "SELL"}:
         accrued_data = _accrued_income_data(data)
         accrued_operation = PlannedTrade if transaction_type == "BUY" else PlannedPayout
-        operations.extend([
-            accrued_operation(row.line_number, accrued_data),
-            PlannedCash(row.line_number, accrued_data),
-        ])
+        operations.extend(
+            [
+                accrued_operation(row.line_number, accrued_data),
+                PlannedCash(row.line_number, accrued_data),
+            ]
+        )
     return operations
 
 
@@ -110,20 +112,19 @@ def _is_true(value):
 
 def _accrued_income_data(data):
     accrued_data = dict(data)
-    for field in (
-        "accrued_income",
-        "accrued_income_in_instrument_currency",
-        "accrued_income_in_gbp",
-        "accrued_income_in_aud",
-    ):
-        accrued_data.pop(field, None)
-    accrued_data.update({
-        "unique_identifier": f"{data['unique_identifier']}-accrued_income",
-        "amount": data.get("accrued_income"),
-        "amount_in_instrument_currency": data.get("accrued_income_in_instrument_currency"),
-        "amount_in_gbp": data.get("accrued_income_in_gbp"),
-        "amount_in_aud": data.get("accrued_income_in_aud"),
-    })
+    for field in tuple(accrued_data):
+        if field == "accrued_income" or field.startswith("accrued_income_in_"):
+            accrued_data.pop(field, None)
+    accrued_data.update(
+        {
+            "unique_identifier": f"{data['unique_identifier']}-accrued_income",
+            "amount": data.get("accrued_income"),
+            "amount_in_instrument_currency": data.get("accrued_income_in_instrument_currency"),
+        }
+    )
+    for field, value in data.items():
+        if field.startswith("accrued_income_in_"):
+            accrued_data[field.replace("accrued_income", "amount", 1)] = value
     if data["transaction_type"] == "BUY":
         accrued_data["transaction_type"] = "CAPITAL_CALL"
     else:
@@ -135,7 +136,7 @@ def _accrued_income_data(data):
 
 
 def _expand_retained(line_number, data, transaction_type):
-    if float(data["amount"]) == 0:
+    if _decimal(data["amount"]) == 0:
         return []
 
     primary_data = dict(data)
@@ -146,15 +147,32 @@ def _expand_retained(line_number, data, transaction_type):
         primary_data["transaction_type"] = "CAPITAL_RETURN"
 
     capital_call_data = dict(data)
-    capital_call_data.update({
-        "unique_identifier": f"{data['unique_identifier']}_CALL",
-        "transaction_type": "CAPITAL_CALL",
-        "amount": float(data["amount"]) * -1,
-        "amount_in_instrument_currency": float(data["amount_in_instrument_currency"]) * -1,
-        "amount_in_aud": float(data["amount_in_aud"]) * -1,
-        "amount_in_gbp": float(data["amount_in_gbp"]) * -1,
-    })
+    capital_call_data.update(
+        {
+            "unique_identifier": f"{data['unique_identifier']}_CALL",
+            "transaction_type": "CAPITAL_CALL",
+            "amount": _plain(-_decimal(data["amount"])),
+            "amount_in_instrument_currency": _plain(
+                -_decimal(data["amount_in_instrument_currency"])
+            ),
+        }
+    )
+    for field, value in data.items():
+        if (
+            field.startswith("amount_in_")
+            and field != "amount_in_instrument_currency"
+            and value not in (None, "")
+        ):
+            capital_call_data[field] = _plain(-_decimal(value))
     return [
         primary_operation(line_number, primary_data),
         PlannedTrade(line_number, capital_call_data),
     ]
+
+
+def _decimal(value):
+    return Decimal(str(value))
+
+
+def _plain(value):
+    return format(value, "f")

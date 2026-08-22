@@ -1,5 +1,7 @@
 import unittest
 import json
+import io
+from contextlib import redirect_stderr
 from unittest.mock import MagicMock, call, patch
 
 import requests
@@ -37,12 +39,14 @@ class SharesightApiClientContractTests(unittest.TestCase):
                 "client_secret": "client-secret",
             },
             headers={},
+            timeout=(10, 30),
         ))
         self.assertEqual(request.call_args_list[1], call(
             "post",
             "https://api.sharesight.com/api/v2/trades.json",
             json={"trade": {"unique_identifier": "synthetic-1"}},
             headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+            timeout=(10, 30),
         ))
 
     def test_cash_and_custom_investment_endpoint_contracts(self):
@@ -153,6 +157,37 @@ class SharesightApiClientContractTests(unittest.TestCase):
                 client.get_portfolios()
         self.assertEqual(sleep.call_args_list, [call(5), call(10)])
         self.assertEqual(request.call_count, 4)
+
+    def test_mutation_gateway_failure_is_not_retried(self):
+        client, request = self.make_client([
+            FakeResponse(200, {"access_token": "test-token"}),
+            FakeResponse(502, {"error": "gateway"}),
+        ])
+        result = client.try_create_trade({"unique_identifier": "one-attempt"})
+        self.assertEqual(result.status_code, 502)
+        self.assertEqual(request.call_count, 2)
+
+    def test_token_acquisition_retries_gateway_failure(self):
+        client, request = self.make_client([
+            FakeResponse(502, {"error": "gateway"}),
+            FakeResponse(200, {"access_token": "test-token"}),
+        ])
+        self.assertIsNotNone(client)
+        self.assertEqual(request.call_count, 2)
+
+    def test_verbose_diagnostics_never_expose_secrets_or_tokens(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            client, _ = self.make_client([
+                FakeResponse(200, {"access_token": "very-secret-token"}),
+                FakeResponse(200, {"portfolios": []}),
+            ])
+            client._output_curl = True
+            client.get_portfolios()
+        output = stderr.getvalue()
+        self.assertIn("headers/body redacted", output)
+        self.assertNotIn("very-secret-token", output)
+        self.assertNotIn("client-secret", output)
 
 
 if __name__ == "__main__":

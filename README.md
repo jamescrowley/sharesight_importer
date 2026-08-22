@@ -1,164 +1,103 @@
-# Sharesight CSV importer
+# Sharesight Importer
 
-A small Python command-line tool for importing transaction and custom-price CSVs into a Sharesight portfolio. It creates portfolios, cash accounts, trades, payouts, custom instruments, and cash transactions through the Sharesight API, while using stable identifiers to make many repeated imports safe.
+Sharesight Importer is an MIT-licensed power-user CLI for validating and importing a documented, broker-neutral CSV into a Sharesight portfolio. You normalize your own source data and use API credentials connected to your own account.
 
-The code is tailored to Australian (`AU`) and United Kingdom (`GB`) portfolios and to the author's source CSV format. It is not a general-purpose Sharesight CSV importer.
+This project is independent of Sharesight. It is not endorsed by Sharesight and does not provide tax, legal, or financial advice.
 
-## What it supports
+## Install
 
-- Trades and adjustments: `BUY`, `SELL`, `SPLIT`, `BONUS`, `CONSOLD`, `CANCEL`, `CAPITAL_RETURN`, `OPENING_BALANCE`, `ADJUST_COST_BASE`, and `CAPITAL_CALL`.
-- Income: `DIVIDEND`, `DISTRIBUTION`, `RETAINED_NET_INCOME`, and `RETAINED_EQUALISATION`.
-- Holding mergers expressed as adjacent `MERGE_CANCEL`/`MERGE_BUY` rows.
-- Cash activity: `DEPOSIT`, `WITHDRAWAL`, `INTEREST_PAYMENT`, `INTEREST_CHARGED`, `FEE`, and `FEE_REIMBURSEMENT`.
-- Sharesight custom instruments (`market=OTHER`) and a separate custom-price CSV.
-- Date and source-line filters for restarting or importing part of a file.
-
-## Requirements
-
-- Python 3.12 (selected by `.python-version`; the source uses modern type syntax and Python 3.12 f-string parsing).
-- A Sharesight API client ID and client secret.
-- [uv](https://docs.astral.sh/uv/) for Python and dependency management.
-
-Create the project environment from the checked-in lockfile:
+Python 3.12–3.14 is supported. From a release, download the wheel and install it in an isolated environment. For development:
 
 ```sh
-uv sync
+uv sync --locked
+uv run sharesight-importer --help
 ```
 
-uv installs Python 3.12 if necessary and creates `.venv` with the locked `requests` and `curlify` dependencies. Commands can be run through `uv run` without manually activating the environment.
-
-Set credentials without placing them in source files or CSVs:
+API access must be enabled for your Sharesight account. Store client credentials only in environment variables; command-line credential arguments are intentionally unsupported:
 
 ```sh
 export SHARESIGHT_CLIENT_ID='...'
 export SHARESIGHT_CLIENT_SECRET='...'
 ```
 
-## Usage
+`validate` is completely offline and does not require these variables.
 
-Run the entry point from the repository root:
+## Safe workflow
 
-```sh
-uv run python __main__.py \
-  import \
-  --portfolio-name "My Portfolio" \
-  --file-name transactions.csv \
-  --country-code AU
-```
-
-Useful optional arguments:
-
-```text
---prices-file-name prices.csv       Import custom-instrument prices
---residency-reset-file-name FILE    Insert a frozen residency reset into full history
---ignore-retained-income            Skip retained net income and retained equalisation rows
---min-date YYYY-MM-DD               Skip earlier transactions
---min-line N / --max-line N         Process a source line range (header is line 1)
---exclude-exdate-transactions-before-min-date
-                                    Also apply the minimum date to ex-dates
---verbose                           Print requests as curl commands
---delete-existing                   Clear existing holdings/cash activity first
-```
-
-`--delete-existing` is destructive: it deletes portfolio cash transactions and holdings before recreating data. Importer-created custom instruments that are still referenced by the input are preserved (including their Sharesight categories); generated instruments no longer present in the input are deleted. The importer refuses to combine this option with date or line filters.
-
-Use `--ignore-retained-income` when retained income and retained equalisation should not be represented in the destination portfolio (for example, where the destination's tax treatment does not require them). It skips both `RETAINED_NET_INCOME` and `RETAINED_EQUALISATION` rows before custom-instrument synchronization and transaction planning. Other income types are unaffected.
-
-### Australian residency reset with complete history
-
-For a portfolio containing its complete pre-residency transaction history, a separate reset export can crystallise each holding immediately before Australian residency and create its deemed-acquisition parcel on the commencement date:
+Read [the canonical CSV schema](docs/csv-schema.md), then validate locally:
 
 ```sh
-uv run python __main__.py \
-  export-residency-reset \
-  --source-portfolio-name "Existing Portfolio" \
-  --residency-date 2025-07-01 \
-  --exchange-rates-file-name exchange_rates.csv \
-  --output-file residency-reset-2025-07-01.csv
+sharesight-importer validate --file-name transactions.csv --portfolio-currency AUD
 ```
 
-The export contains an adjacent pair for every holding: a synthetic `SELL` dated one day before residency and a `BUY` dated on the residency date. Both legs have identical quantity, price and converted values, zero brokerage, and `skip_cash_account_transaction=true`, so they do not create cash-account transactions.
-
-Import the complete transaction history and the frozen reset together:
+Back up/export the target portfolio in Sharesight, then inspect live state without changing it:
 
 ```sh
-uv run python __main__.py \
-  import -p "Australian Portfolio" -f complete-history.csv -c AU \
-  --residency-reset-file-name residency-reset-2025-07-01.csv
+sharesight-importer import --portfolio-name 'Investments' \
+  --portfolio-currency AUD --file-name transactions.csv --dry-run
 ```
 
-The importer inserts the reset between pre-residency and residency-date transactions. Before any portfolio setup, it replays quantity-changing rows from the complete history and requires them to exactly match the exported reset quantities. Buys, opening balances, bonus issues, splits, and merger buys add units; sells, cancellations, consolidations, and merger cancellations remove units. In this bespoke CSV, split and consolidation quantities represent the number of units added or removed rather than the resulting balance. Any difference, including a small rounding residual, stops the import so the frozen reset CSV can be corrected or regenerated. Date and line filters are prohibited because quantity reconciliation requires complete history.
-
-The pre-residency history in this single portfolio is intended for performance reporting. Australian tax reports should start on the residency date so the prior-day synthetic disposals and pre-residency income are excluded. Confirm the chosen residency date and deemed-acquisition valuation with an appropriate tax adviser.
-
-## CSV inputs
-
-The canonical output column order is defined in `sharesight_csv_input.py`. Every ordinary row should have the common fields below, leaving non-applicable values blank:
-
-```text
-unique_identifier,transaction_type,transaction_date,symbol,market,quantity,
-amount,amount_currency,cash_account,description,instrument_currency,
-price_in_instrument_currency,amount_in_instrument_currency,
-brokerage_in_instrument_currency,exchange_rate_aud,exchange_rate_gbp,
-amount_in_aud,amount_in_gbp,goes_ex_on
-```
-
-Additional conditional fields include:
-
-- Custom instruments (`market=OTHER`): `symbol_name`, `instrument_country_code`, and optionally `symbol_type` (defaults to `MANAGED_FUND`). Their API symbols are automatically qualified with the portfolio ID.
-- Payouts: `tax_withheld`, `tax_withheld_currency`, `tax_credit`, and portfolio-currency values such as `amount_in_aud` or `amount_in_gbp`.
-- Accrued income: `accrued_income` plus its instrument/AUD/GBP converted values.
-- Opening balances and retained-income rows require the relevant converted amount fields.
-
-Custom prices use a separate three-column file:
-
-```csv
-symbol,date,price
-MYFUND,2025-06-30,10.50
-```
-
-Dates use `YYYY-MM-DD`. Keep `unique_identifier` stable across reruns: Sharesight uses it to reject duplicate trades and the importer reuses it as the cash transaction's foreign identifier. Payout deduplication is less precise and uses holding plus paid date.
-
-## Exchange-rate helper scripts
-
-`import_rates.py` downloads internal Sharesight exchange-rate responses for dates listed one per line in `dates.txt`, placing JSON files in `rates/`. It uses a browser session cookie and an undocumented internal endpoint, so treat it as a personal maintenance helper rather than a stable API integration.
+Run the live import only after reviewing that output:
 
 ```sh
-uv run python import_rates.py --cookie '...cookie value...'
-uv run python extract_rates_to_csv.py
+sharesight-importer import --portfolio-name 'Investments' \
+  --portfolio-currency AUD --file-name transactions.csv
 ```
 
-The second command consolidates `rates/*.json` into `exchange_rates_ss.csv`. Neither cookies nor generated/private financial data should be committed.
-
-`extract_lse_data.py` is a standalone prototype for extracting dates and closing prices from a particular JSON shape; its hard-coded placeholder input means it is not part of the main workflow as written.
-
-## Tests
-
-The tests use `unittest` and mocked API responses, so they should not contact Sharesight:
+Portfolio names match exactly. A missing portfolio is an error. Creating one is deliberate and requires its domicile:
 
 ```sh
+sharesight-importer import --portfolio-name 'New Portfolio' \
+  --portfolio-currency CAD --country-code CA --create-portfolio \
+  --file-name transactions.csv
+```
+
+`--portfolio-currency` is always required and selects the CSV conversion fields. For an
+existing portfolio, it is checked against Sharesight before any mutation.
+`--country-code` is accepted only with `--create-portfolio`; it supplies the new
+portfolio's domicile and never selects currency fields.
+
+Sharesight's create-portfolio request accepts the country but not an explicit currency.
+The importer therefore creates the empty portfolio, reads it back, and verifies its
+assigned currency before creating cash accounts, instruments, trades, or payouts. If
+that check fails, the import stops and the empty portfolio remains for manual review or
+removal.
+
+## Destructive replacement and cash resync
+
+`--delete-existing` removes the target's cash accounts/transactions and holdings before replacement. After all local and API preflight checks, the CLI prints the exact portfolio name/ID and affected counts, lists managed custom instruments, and requires the exact portfolio name on interactive stdin. Mismatch, EOF, and non-interactive input abort. Deliberate automation requires `--yes`. A dry run never prompts or mutates.
+
+Managed instruments are identified by `--managed-instrument-name-suffix` (default `(AUTO)`). This is an ownership marker and should remain stable for a portfolio. Replacement preserves referenced managed instruments and deletes only managed instruments absent from the complete replacement input. An “instrument in use” rejection is fatal.
+
+Cash-account resynchronization is enabled after a successful import. It uses an undocumented Sharesight endpoint and may change or disappear without notice. Disable it with `--no-resync-cash-accounts`.
+
+Sharesight provides no transaction spanning a complete import. If execution is interrupted, inspect the portfolio before rerunning. Stable `unique_identifier` values provide trade/cash idempotency; payout deduplication is based on holding and paid date.
+
+## Australian residency reset
+
+This workflow is explicitly Australian and requires an AUD destination:
+
+```sh
+sharesight-importer export-residency-reset \
+  --source-portfolio-name 'Pre-residency Portfolio' \
+  --portfolio-currency AUD --residency-date 2025-07-01 \
+  --exchange-rates-file-name exchange-rates.csv \
+  --output-file residency-reset.csv
+```
+
+The export creates adjacent, cash-suppressed SELL/BUY pairs around the residency date using the prior valuation and supplied rates. Import it with complete history using `--residency-reset-file-name`. Every nonzero difference between replayed history quantity and reset quantity is a hard failure. Confirm the residency date, deemed-acquisition value, and tax treatment with a qualified adviser.
+
+## Development and releases
+
+All tests use mocks or the stateful fake HTTP service; never use a live portfolio for validation.
+
+```sh
+uv sync --locked
 uv run python -m unittest -v
+uv run python -m compileall -q sharesight_importer *.py
+uv run ruff format --check .
+uv run ruff check .
+uv build
 ```
 
-The suite uses temporary CSV files and mocked Sharesight responses; it does not contact the live API.
-
-## Project layout
-
-- `__main__.py` — command-line argument parsing and application wiring.
-- `sharesight_csv_importer.py` — CSV orchestration, conversions, deduplication, and payload construction.
-- `sharesight_api_client.py` — OAuth and Sharesight HTTP endpoints.
-- `test_sharesight_csv_importer.py` — mocked unit tests present in the working tree.
-- `import_rates.py` / `extract_rates_to_csv.py` — exchange-rate maintenance helpers.
-- `extract_lse_data.py` — standalone JSON extraction prototype.
-
-## Known limitations
-
-- No CI, formatter, or linter configuration is present.
-- API calls can mutate or delete real portfolio data; there is no dry-run mode.
-- Only AU and GB portfolio conversion fields are selected by the importer.
-- Merge rows must be adjacent and correctly ordered.
-- Shorts are unsupported by Sharesight and only produce a warning here.
-- Payout identity is inferred from holding and paid date because the API does not expose the same unique-ID behavior as trades.
-- The API client retries HTTP 502/504 responses up to three times with exponential backoff.
-
-The project is licensed under the terms in [LICENSE](LICENSE).
+GitHub releases may attach wheel and source-distribution artifacts. PyPI publication is intentionally out of scope. See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [CHANGELOG.md](CHANGELOG.md).

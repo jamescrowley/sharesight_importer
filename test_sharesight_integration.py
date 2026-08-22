@@ -83,7 +83,7 @@ class FakeSharesightTransport:
         self._next_id += 1
         return self._next_id
 
-    def __call__(self, method, url, json=None, headers=None):
+    def __call__(self, method, url, json=None, headers=None, timeout=None):
         method = method.lower()
         parsed = urlparse(url)
         path = parsed.path
@@ -229,12 +229,19 @@ class ImporterHttpIntegrationTests(unittest.TestCase):
         }
         portfolio_name = overrides.pop("portfolio_name", "Test Portfolio")
         country_code = overrides.pop("country_code", "GB")
+        portfolio_currency = overrides.pop("portfolio_currency", "GBP")
+        options["create_portfolio"] = overrides.pop("create_portfolio", True)
         options.update(overrides)
+        options.setdefault("yes", options.get("delete_existing", False))
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "transactions.csv"
             path.write_text(CSV_HEADER + "".join(rows), encoding="utf-8-sig")
             return self.importer.import_file(
-                path, portfolio_name, country_code, ImportOptions(**options)
+                path,
+                portfolio_name,
+                portfolio_currency,
+                options=ImportOptions(**options),
+                country_code=country_code,
             )
 
     def test_mixed_workflow_reaches_real_http_client_and_preserves_cash_effects(self):
@@ -338,9 +345,14 @@ class ImporterHttpIntegrationTests(unittest.TestCase):
         for transaction_type in (
             "DEPOSIT", "WITHDRAWAL", "INTEREST_PAYMENT", "INTEREST_CHARGED", "FEE", "FEE_REIMBURSEMENT"
         ):
+            amount = "-1" if transaction_type in {"WITHDRAWAL", "INTEREST_CHARGED", "FEE"} else "1"
             rows.append(csv_row(
                 unique_identifier=transaction_type.lower(), transaction_type=transaction_type,
-                symbol="", market="", quantity="", amount="1",
+                symbol="", market="", quantity="",
+                amount=amount,
+                amount_in_instrument_currency=amount,
+                amount_in_gbp=amount,
+                amount_in_aud=amount,
             ))
 
         self.run_import(rows)
@@ -361,7 +373,7 @@ class ImporterHttpIntegrationTests(unittest.TestCase):
             csv_row(unique_identifier="au-buy", exchange_rate_aud="1.75", amount_in_aud="87.50"),
             csv_row(unique_identifier="au-opening", transaction_type="OPENING_BALANCE", amount="0",
                     exchange_rate_aud="1.75", amount_in_aud="87.50"),
-        ], country_code="AU")
+        ], country_code="AU", portfolio_currency="AUD")
 
         self.assertEqual(self.transport.trades[0]["exchange_rate"], "1.75")
         self.assertEqual(self.transport.trades[1]["exchange_rate"], "1.75")
@@ -508,9 +520,9 @@ class ImporterHttpIntegrationTests(unittest.TestCase):
             ])
         self.assertEqual(self.transport.portfolios, [])
 
-    def test_unsupported_country_is_rejected_before_portfolio_setup(self):
-        with self.assertRaisesRegex(ValueError, "Unsupported country code"):
-            self.run_import([csv_row()], country_code="US")
+    def test_invalid_country_is_rejected_before_portfolio_setup(self):
+        with self.assertRaisesRegex(ValueError, "Invalid country code"):
+            self.run_import([csv_row()], country_code="USA")
         self.assertEqual(self.transport.portfolios, [])
 
     def test_unsupported_transaction_is_rejected_before_portfolio_setup(self):

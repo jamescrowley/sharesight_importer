@@ -76,6 +76,44 @@ class CustomInstrumentCleanupTests(unittest.TestCase):
         synchronizer.sync(123, [custom_row(2)], delete_obsolete=True)
 
         api_client.delete_custom_investment.assert_called_once_with(2)
+
+    def test_custom_suffix_marks_creation_and_cleanup_ownership(self):
+        api_client = MagicMock()
+        api_client.get_custom_investments.return_value = {
+            "custom_investments": [
+                {"id": 1, "code": "OLD-7", "name": "Old [MANAGED]"},
+                {"id": 2, "code": "MANUAL", "name": "Manual"},
+            ]
+        }
+        api_client.create_custom_investment.return_value = {
+            "currency_code": "GBP"
+        }
+        synchronizer = CustomInstrumentSynchronizer(api_client)
+        new_instrument = dict(custom_row(2).data)
+        new_instrument["symbol"] = "NEW"
+        synchronizer.sync(
+            7,
+            [TransactionRow(2, new_instrument)],
+            delete_obsolete=True,
+            managed_suffix="[MANAGED]",
+        )
+        api_client.delete_custom_investment.assert_called_once_with(1)
+        self.assertTrue(
+            api_client.create_custom_investment.call_args.args[0]["name"].endswith("[MANAGED]")
+        )
+
+    def test_instrument_deletion_failure_is_fatal(self):
+        api_client = MagicMock()
+        api_client.get_custom_investments.return_value = {
+            "custom_investments": [
+                {"id": 1, "code": "OLD-7", "name": "Old (AUTO)"},
+            ]
+        }
+        api_client.delete_custom_investment.side_effect = RuntimeError("instrument in use")
+        with self.assertRaisesRegex(RuntimeError, "instrument in use"):
+            CustomInstrumentSynchronizer(api_client).sync(
+                7, [], delete_obsolete=True
+            )
         api_client.create_custom_investment.assert_not_called()
         api_client.update_custom_investment.assert_not_called()
 

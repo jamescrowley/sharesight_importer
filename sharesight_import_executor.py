@@ -1,4 +1,5 @@
 import sys
+from decimal import Decimal
 
 from sharesight_console import error, warn
 from sharesight_custom_instruments import qualify_custom_instrument_symbol
@@ -16,23 +17,42 @@ from sharesight_payloads import (
 )
 from sharesight_trade_validation import validate_trade
 
+
 def holding_lookup_key(portfolio_id, symbol, market):
     return f"{portfolio_id}-{market}-{symbol}".lower()
 
 
 class ImportExecutor:
-    def __init__(self, api_client, portfolio_id, country_code, cash_accounts):
+    def __init__(
+        self,
+        api_client,
+        portfolio_id,
+        portfolio_currency,
+        cash_accounts,
+        resync_cash_accounts=True,
+        existing_payouts=None,
+        existing_holdings=None,
+    ):
         self._api_client = api_client
         self._portfolio_id = portfolio_id
-        self._country_code = country_code
+        self._portfolio_currency = portfolio_currency
         self._cash_accounts = cash_accounts
+        self._resync_cash_accounts = resync_cash_accounts
 
-        payouts = api_client.get_payouts(portfolio_id).get("payouts")
+        payouts = (
+            existing_payouts
+            if existing_payouts is not None
+            else api_client.get_payouts(portfolio_id).get("payouts")
+        )
         self._payouts = {
             self._payout_lookup_key(payout["holding_id"], payout["paid_on"]): payout["id"]
             for payout in payouts
         }
-        holdings = api_client.get_portfolio_holdings(portfolio_id)["holdings"]
+        holdings = (
+            existing_holdings
+            if existing_holdings is not None
+            else api_client.get_portfolio_holdings(portfolio_id)["holdings"]
+        )
         self._holdings = {
             holding_lookup_key(
                 portfolio_id,
@@ -50,10 +70,11 @@ class ImportExecutor:
             elif not self._execute_operation(operation):
                 return False
 
-        print("Syncing cash accounts")
-        for cash_account_id in set(self._cash_accounts.values()):
-            if cash_account_id:
-                self._api_client.resync_cash_account(cash_account_id)
+        if self._resync_cash_accounts:
+            print("WARNING: resynchronizing cash accounts via an undocumented Sharesight endpoint")
+            for cash_account_id in set(self._cash_accounts.values()):
+                if cash_account_id:
+                    self._api_client.resync_cash_account(cash_account_id)
         return True
 
     def _execute_merge(self, operation):
@@ -78,20 +99,19 @@ class ImportExecutor:
 
         payload = build_merge_payload(holding_id, buy_data)
         result = self._api_client.try_create_holding_merge(self._portfolio_id, payload)
-        self._print_result(log_prefix, payload, result)
-        return True
+        return self._print_result(log_prefix, payload, result)
 
     def _execute_operation(self, operation):
         data = self._qualified_data(operation.data)
         log_prefix = (
             f"Line {operation.line_number}\t{data['unique_identifier']}\t{data['transaction_type']}"
         )
-        holding_key = holding_lookup_key(
-            self._portfolio_id, data.get("symbol"), data.get("market")
-        )
+        holding_key = holding_lookup_key(self._portfolio_id, data.get("symbol"), data.get("market"))
 
         if isinstance(operation, PlannedTrade):
-            holding_id = self._create_trade(log_prefix, data)
+            successful, holding_id = self._create_trade(log_prefix, data)
+            if not successful:
+                return False
             if holding_id:
                 print(f"{log_prefix}\tSaved holding id {holding_id} in {holding_key}")
                 self._holdings[holding_key] = holding_id
@@ -110,16 +130,13 @@ class ImportExecutor:
                     file=sys.stderr,
                 )
                 return False
-            self._create_payout(log_prefix, data, holding_id)
-            return True
+            return self._create_payout(log_prefix, data, holding_id)
 
         if isinstance(operation, PlannedCash):
             cash_account_key = (
-                f"{data.get('amount_currency')}-"
-                f"{data.get('cash_account') or 'Account'}"
+                f"{data.get('amount_currency')}-{data.get('cash_account') or 'Account'}"
             )
-            self._create_cash(self._cash_accounts.get(cash_account_key), log_prefix, data)
-            return True
+            return self._create_cash(self._cash_accounts.get(cash_account_key), log_prefix, data)
 
         raise AssertionError(f"Unhandled planned operation: {type(operation).__name__}")
 
@@ -129,14 +146,15 @@ class ImportExecutor:
         return qualified
 
     def _create_trade(self, log_prefix, data):
-        if float(data.get("quantity")) < 0:
+        if Decimal(str(data.get("quantity"))) < 0:
             warn(
                 f"{log_prefix}\tShorts are not supported by Sharesight. "
                 f"Quantity is negative: {data.get('quantity')}"
             )
-        payload = build_trade_payload(self._portfolio_id, self._country_code, data)
+        payload = build_trade_payload(self._portfolio_id, self._portfolio_currency, data)
         result = self._api_client.try_create_trade(payload)
-        self._print_result(log_prefix, payload, result)
+        if not self._print_result(log_prefix, payload, result):
+            return False, None
         response_data = result.data.get("trade")
         holding_id = response_data.get("holding_id") if response_data else None
         if not holding_id:
@@ -145,25 +163,25 @@ class ImportExecutor:
                 f"{log_prefix}\t{result.status_code} Couldn't find holding id {reason} - "
                 f"{result.data} - skipping instrument currency check and validation"
             )
-            return None
+            return True, None
 
         holding = self._api_client.get_holding(holding_id)
         holding_currency = holding["holding"]["instrument"]["currency_code"]
         for issue in validate_trade(data, response_data, holding_currency):
             output = warn if issue.is_warning else error
             output(f"{log_prefix}\t{issue.message}")
-        return holding_id
+        return True, holding_id
 
     def _create_payout(self, log_prefix, data, holding_id):
         payout_key = self._payout_lookup_key(holding_id, data.get("transaction_date"))
         if payout_key in self._payouts:
             warn(f"{log_prefix}\tSkipping payout as it already appears to exist")
-            return
+            return True
         payload = build_payout_payload(
-            self._portfolio_id, holding_id, self._country_code, data
+            self._portfolio_id, holding_id, self._portfolio_currency, data
         )
         result = self._api_client.try_create_payout(payload)
-        self._print_result(log_prefix, payload, result)
+        return self._print_result(log_prefix, payload, result)
 
     def _create_cash(self, cash_account_id, log_prefix, data):
         if cash_account_id is None:
@@ -173,7 +191,7 @@ class ImportExecutor:
             )
         payload = build_cash_payload(data)
         result = self._api_client.try_create_cash_transaction(cash_account_id, payload)
-        self._print_result(log_prefix, payload, result)
+        return self._print_result(log_prefix, payload, result)
 
     def _payout_lookup_key(self, holding_id, paid_on):
         return f"{self._portfolio_id}-{holding_id}-{paid_on}".lower()
@@ -182,13 +200,16 @@ class ImportExecutor:
     def _print_result(log_prefix, payload, result):
         if result.successful:
             print(f"{log_prefix}\t{result.status_code} Success {result.endpoint}")
+            return True
         elif result.duplicate:
             print(
                 f"{log_prefix}\t{result.status_code} Skipped (duplicate): "
                 f"{result.data} {payload} {result.endpoint}"
             )
+            return True
         else:
             print(
                 f"{log_prefix}\t{result.status_code} {result.data} {payload} {result.endpoint}",
                 file=sys.stderr,
             )
+            return False
